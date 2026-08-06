@@ -82,6 +82,7 @@ function compressImage(file, maxWidth = 1000, quality = 0.65) {
 }
 
 const ADMIN_NAME = 'Admin';
+const ADMIN_PIN = import.meta.env.VITE_ADMIN_PIN;
 
 const EXPENSE_CATEGORIES = [
   'Bahn/ÖPNV', 'PKW (Kilometergeld)', 'Tanken/Kraftstoff', 'Taxi/Mietwagen', 'Übernachtung', 'Parken', 'Bewirtung (Geschäftsessen)', 'Sonstiges'
@@ -129,6 +130,8 @@ async function deleteReceiptImage(expenseId) {
 export default function App() {
   const [user, setUser] = useState(null);
   const [nameInput, setNameInput] = useState('');
+  const [adminPinInput, setAdminPinInput] = useState('');
+  const [loginError, setLoginError] = useState('');
   const [trips, setTrips] = useState([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState('list'); // list | new | detail | admin
@@ -156,11 +159,27 @@ export default function App() {
   const login = () => {
     const n = nameInput.trim();
     if (!n) return;
+
+    if (n === ADMIN_NAME) {
+      if (!ADMIN_PIN) {
+        setLoginError('Admin-PIN ist noch nicht eingerichtet.');
+        return;
+      }
+      if (adminPinInput !== ADMIN_PIN) {
+        setLoginError('Admin-PIN ist nicht korrekt.');
+        return;
+      }
+    }
+
+    setLoginError('');
     setUser(n);
   };
 
   const logout = () => {
     setUser(null);
+    setNameInput('');
+    setAdminPinInput('');
+    setLoginError('');
     setView('list');
     setActiveTrip(null);
   };
@@ -174,7 +193,7 @@ export default function App() {
   }
 
   if (!user) {
-    return <LoginScreen nameInput={nameInput} setNameInput={setNameInput} onLogin={login} />;
+    return <LoginScreen nameInput={nameInput} setNameInput={setNameInput} adminPinInput={adminPinInput} setAdminPinInput={setAdminPinInput} loginError={loginError} onLogin={login} />;
   }
 
   const isAdmin = user === ADMIN_NAME;
@@ -231,7 +250,7 @@ export default function App() {
 }
 
 // ================= LOGIN =================
-function LoginScreen({ nameInput, setNameInput, onLogin }) {
+function LoginScreen({ nameInput, setNameInput, adminPinInput, setAdminPinInput, loginError, onLogin }) {
   return (
     <div style={styles.loginScreen}>
       <div style={styles.loginCard}>
@@ -246,8 +265,21 @@ function LoginScreen({ nameInput, setNameInput, onLogin }) {
           onKeyDown={e => e.key === 'Enter' && onLogin()}
           autoFocus
         />
+
+        {nameInput.trim() === ADMIN_NAME && (
+          <input
+            style={styles.loginInput}
+            type="password"
+            placeholder="Admin-PIN"
+            value={adminPinInput}
+            onChange={e => setAdminPinInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && onLogin()}
+          />
+        )}
+
+        {loginError && <p style={styles.loginError}>{loginError}</p>}
+
         <button style={styles.loginBtn} onClick={onLogin}>Anmelden</button>
-        <p style={styles.loginHint}>Admin-Zugang: Name "Admin" eingeben</p>
       </div>
     </div>
   );
@@ -917,6 +949,7 @@ const styles = {
   loginInput: { width: '100%', padding: '14px 16px', borderRadius: 12, border: '1.5px solid #E2E4E8', fontSize: 16, marginBottom: 14, boxSizing: 'border-box', outline: 'none' },
   loginBtn: { width: '100%', padding: '14px', borderRadius: 12, border: 'none', background: NAVY, color: OFFWHITE, fontSize: 16, fontWeight: 600, cursor: 'pointer' },
   loginHint: { fontSize: 12, color: '#B4B8C0', marginTop: 18 },
+  loginError: { fontSize: 12.5, color: '#C0392B', margin: '-4px 0 12px', textAlign: 'left' },
 
   topBar: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', background: OFFWHITE, borderBottom: '1px solid #E8E6E0', position: 'sticky', top: 0, zIndex: 10 },
   topBarLeft: { display: 'flex', alignItems: 'center', gap: 10 },
