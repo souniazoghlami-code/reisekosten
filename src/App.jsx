@@ -438,6 +438,8 @@ function NewTrip({ user, onCancel, onSave }) {
   const [endDate, setEndDate] = useState('');
   const [endTime, setEndTime] = useState('');
 
+  const sameDay = startDate && endDate && startDate === endDate;
+
   const canContinue =
     destination.trim() &&
     startDate &&
@@ -445,57 +447,131 @@ function NewTrip({ user, onCancel, onSave }) {
     endDate &&
     endTime &&
     startDate <= endDate &&
-    !(startDate === endDate && endTime <= startTime);
+    !(sameDay && endTime <= startTime);
 
   const handleCreate = () => {
     const days = calcDays(startDate, endDate, startTime, endTime);
+
     const meals = {};
-    days.forEach(d => { meals[d.date] = { breakfast: false, lunch: false, dinner: false }; });
+    days.forEach(d => {
+      meals[d.date] = {
+        breakfast: false,
+        lunch: false,
+        dinner: false
+      };
+    });
+
     const perDiemDays = calcPerDiem(days, meals);
+
     const trip = {
       id: uid(),
       employee: user,
       destination: destination.trim(),
       purpose: purpose.trim(),
-      startDate, startTime, endDate, endTime,
+      startDate,
+      startTime,
+      endDate,
+      endTime,
       perDiemDays,
       expenses: [],
       status: 'pending',
       createdAt: new Date().toISOString(),
     };
+
     onSave(trip);
   };
+
+  let durationText = '';
+  if (sameDay && startTime && endTime && endTime > startTime) {
+    const start = new Date(`${startDate}T${startTime}:00`);
+    const end = new Date(`${endDate}T${endTime}:00`);
+    const minutes = Math.round((end - start) / 60000);
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    durationText = `${hours} Std.${mins ? ` ${mins} Min.` : ''}`;
+  }
 
   return (
     <div style={styles.formWrap}>
       <Field label="Reiseziel">
-        <input style={styles.input} placeholder="z. B. München" value={destination} onChange={e => setDestination(e.target.value)} />
+        <input
+          style={styles.input}
+          placeholder="z. B. München"
+          value={destination}
+          onChange={e => setDestination(e.target.value)}
+        />
       </Field>
+
       <Field label="Anlass der Reise">
-        <input style={styles.input} placeholder="z. B. Kundentermin, Messe..." value={purpose} onChange={e => setPurpose(e.target.value)} />
+        <input
+          style={styles.input}
+          placeholder="z. B. Kundentermin, Messe..."
+          value={purpose}
+          onChange={e => setPurpose(e.target.value)}
+        />
       </Field>
+
       <div style={styles.row2}>
-        <Field label="Reisebeginn – Datum" style={{ flex: 1 }}>
-          <input style={styles.input} type="date" value={startDate} onChange={e => setStartDate(e.target.value)} />
+        <Field label="Losgefahren am" style={{ flex: 1 }}>
+          <input
+            style={styles.input}
+            type="date"
+            value={startDate}
+            onChange={e => setStartDate(e.target.value)}
+          />
         </Field>
-        <Field label="Abfahrt – Uhrzeit" style={{ flex: 1 }}>
-          <input style={styles.input} type="time" value={startTime} onChange={e => setStartTime(e.target.value)} />
+
+        <Field label="Uhrzeit" style={{ flex: 1 }}>
+          <input
+            style={styles.input}
+            type="time"
+            value={startTime}
+            onChange={e => setStartTime(e.target.value)}
+          />
         </Field>
       </div>
+
       <div style={styles.row2}>
-        <Field label="Reiseende – Datum" style={{ flex: 1 }}>
-          <input style={styles.input} type="date" value={endDate} onChange={e => setEndDate(e.target.value)} />
+        <Field label="Zurück am" style={{ flex: 1 }}>
+          <input
+            style={styles.input}
+            type="date"
+            value={endDate}
+            onChange={e => setEndDate(e.target.value)}
+          />
         </Field>
-        <Field label="Rückkehr – Uhrzeit" style={{ flex: 1 }}>
-          <input style={styles.input} type="time" value={endTime} onChange={e => setEndTime(e.target.value)} />
+
+        <Field label="Uhrzeit" style={{ flex: 1 }}>
+          <input
+            style={styles.input}
+            type="time"
+            value={endTime}
+            onChange={e => setEndTime(e.target.value)}
+          />
         </Field>
       </div>
+
+      {durationText && (
+        <div style={styles.durationBox}>
+          Abwesenheit: <strong>{durationText}</strong>
+        </div>
+      )}
+
       <p style={styles.helpText}>
-        Die Verpflegungspauschale wird automatisch berechnet. Bei eintägigen Reisen gibt es 14 € nur bei mehr als 8 Stunden Abwesenheit. Bei mehrtägigen Reisen mit Übernachtung gelten An- und Abreisetag jeweils mit 14 €. Hotel-Check-in und Check-out werden separat beim Hotelbeleg erfasst.
+        Bitte tatsächliche Abfahrts- und Rückkehrzeit eintragen.
+        Bei einer eintägigen Reise wird die Verpflegungspauschale automatisch
+        anhand der Abwesenheitsdauer berechnet.
       </p>
+
       <div style={styles.formActions}>
         <button style={styles.secondaryBtn} onClick={onCancel}>Abbrechen</button>
-        <button style={{ ...styles.primaryBtn, opacity: canContinue ? 1 : 0.4 }} disabled={!canContinue} onClick={handleCreate}>Weiter</button>
+        <button
+          style={{ ...styles.primaryBtn, opacity: canContinue ? 1 : 0.4 }}
+          disabled={!canContinue}
+          onClick={handleCreate}
+        >
+          Weiter
+        </button>
       </div>
     </div>
   );
@@ -657,7 +733,9 @@ function TripDetail({ trip, isAdmin, onBack, onUpdate, onDelete, showToast }) {
       )}
 
       <div style={styles.exportRow}>
-        <button style={styles.exportBtn} onClick={() => setShowEditTrip(true)}><Pencil size={15} /> Bearbeiten</button>
+        {!isAdmin && (
+          <button style={styles.exportBtn} onClick={() => setShowEditTrip(true)}><Pencil size={15} /> Bearbeiten</button>
+        )}
         <button style={styles.exportBtn} onClick={() => exportTripPDF(trip)}><FileText size={15} /> PDF</button>
         <button style={styles.exportBtn} onClick={() => exportTripCSV(trip)}><Download size={15} /> CSV</button>
         <button style={styles.deleteBtn} onClick={() => { if (confirm('Reise wirklich löschen?')) onDelete(trip.id); }}><Trash2 size={15} /></button>
@@ -1116,6 +1194,7 @@ const styles = {
   input: { width: '100%', padding: '12px 14px', borderRadius: 10, border: '1.5px solid #E2E4E8', fontSize: 15, boxSizing: 'border-box', background: '#fff', outline: 'none', fontFamily: 'inherit' },
   row2: { display: 'flex', gap: 12 },
   helpText: { fontSize: 12.5, color: '#8A8F98', lineHeight: 1.5, background: '#F1EFEA', padding: 12, borderRadius: 10, marginBottom: 20 },
+  durationBox: { fontSize: 13, color: NAVY, background: '#FFFFFF', border: '1px solid #ECE9E3', padding: '10px 12px', borderRadius: 10, marginBottom: 12 },
   formActions: { display: 'flex', gap: 10, marginTop: 8 },
   secondaryBtn: { flex: 1, padding: '13px', borderRadius: 10, border: '1.5px solid #E2E4E8', background: '#fff', fontSize: 14.5, fontWeight: 600, cursor: 'pointer', color: NAVY },
   primaryBtn: { flex: 1, padding: '13px', borderRadius: 10, border: 'none', background: NAVY, color: OFFWHITE, fontSize: 14.5, fontWeight: 600, cursor: 'pointer' },
