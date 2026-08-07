@@ -25,7 +25,7 @@ function calcDays(startDate, endDate, startTime = '', endTime = '') {
   for (let i = 0; i <= diffDays; i++) {
     const d = new Date(s);
     d.setDate(d.getDate() + i);
-    const iso = d.toISOString().slice(0, 10);
+    const iso = toLocalISODate(d);
     let type = 'full';
     if (diffDays === 0) type = 'single';
     else if (i === 0) type = 'arrival';
@@ -69,6 +69,14 @@ function fmtDate(iso) {
 function fmtDateShort(iso) {
   return new Date(iso + 'T00:00:00').toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' });
 }
+
+function toLocalISODate(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
@@ -868,7 +876,7 @@ function EditTripModal({ trip, onClose, onSave }) {
         </Field>
 
         <div style={styles.row2}>
-          <Field label="Reisebeginn – Datum" style={{ flex: 1 }}>
+          <Field label="Losgefahren am" style={{ flex: 1 }}>
             <input
               style={styles.input}
               type="date"
@@ -877,7 +885,7 @@ function EditTripModal({ trip, onClose, onSave }) {
             />
           </Field>
 
-          <Field label="Abfahrt – Uhrzeit" style={{ flex: 1 }}>
+          <Field label="Uhrzeit" style={{ flex: 1 }}>
             <input
               style={styles.input}
               type="time"
@@ -888,7 +896,7 @@ function EditTripModal({ trip, onClose, onSave }) {
         </div>
 
         <div style={styles.row2}>
-          <Field label="Reiseende – Datum" style={{ flex: 1 }}>
+          <Field label="Zurück am" style={{ flex: 1 }}>
             <input
               style={styles.input}
               type="date"
@@ -897,7 +905,7 @@ function EditTripModal({ trip, onClose, onSave }) {
             />
           </Field>
 
-          <Field label="Rückkehr – Uhrzeit" style={{ flex: 1 }}>
+          <Field label="Uhrzeit" style={{ flex: 1 }}>
             <input
               style={styles.input}
               type="time"
@@ -908,10 +916,10 @@ function EditTripModal({ trip, onClose, onSave }) {
         </div>
 
         <p style={styles.helpText}>
-          Die Verpflegungstage werden nach Datum und Uhrzeit automatisch neu berechnet.
-          Hotel-Check-in und Check-out bleiben davon unabhängig und werden beim Hotelbeleg erfasst.
+          Die Verpflegung wird anhand deiner tatsächlichen Abfahrts- und Rückkehrzeit berechnet.
+          Hotel-Check-in und Check-out werden separat beim Hotelbeleg erfasst.
           Bereits erfasste Belege bleiben erhalten. Bei einer bereits genehmigten Reise
-          wird der Status wieder auf „Ausstehend“ gesetzt.
+          wird der Status nach einer Änderung wieder auf „Ausstehend“ gesetzt.
         </p>
 
         <div style={styles.formActions}>
