@@ -209,6 +209,10 @@ export default function App() {
             isAdmin={isAdmin}
             onSelect={(t) => { setActiveTrip(t); setView('detail'); }}
             onNew={() => setView('new')}
+            onDismissFeedback={async (tripId) => {
+              const next = trips.map(t => t.id === tripId ? { ...t, employeeFeedbackSeen: true } : t);
+              await persist(next);
+            }}
           />
         )}
         {view === 'new' && (
@@ -306,12 +310,31 @@ function TopBar({ user, isAdmin, view, setView, onLogout }) {
 }
 
 // ================= TRIP LIST =================
-function TripList({ trips, isAdmin, onSelect, onNew }) {
+function TripList({ trips, isAdmin, onSelect, onNew, onDismissFeedback }) {
   const sorted = [...trips].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
   const pending = trips.filter(t => t.status === 'pending').length;
+  const feedbackTrip = !isAdmin
+    ? sorted.find(t => !t.employeeFeedbackSeen && employeeFeedbackMeta(t))
+    : null;
+  const feedback = feedbackTrip ? employeeFeedbackMeta(feedbackTrip) : null;
 
   return (
     <div style={styles.listWrap}>
+      {feedbackTrip && feedback && (
+        <div style={{ ...styles.employeeFeedbackBanner, background: feedback.bg, color: feedback.fg }}>
+          <div style={styles.employeeFeedbackText}>
+            <strong>{feedback.title}</strong>
+            <span>{feedback.text}</span>
+          </div>
+          <button
+            style={{ ...styles.feedbackCloseBtn, color: feedback.fg }}
+            onClick={() => onDismissFeedback(feedbackTrip.id)}
+            aria-label="Hinweis schließen"
+          >
+            <X size={17} />
+          </button>
+        </div>
+      )}
       {isAdmin && pending > 0 && (
         <div style={styles.pendingBanner}>
           <AlertCircle size={16} color="#C9A24B" />
@@ -342,6 +365,27 @@ function statusMeta(status) {
     case 'rejected': return { label: 'Abgelehnt', bg: '#FBEAEA', fg: '#C0392B' };
     default: return { label: 'Ausstehend', bg: '#FBF3E3', fg: '#B8862F' };
   }
+}
+
+function employeeFeedbackMeta(trip) {
+  if (!trip || !trip.statusChangedAt) return null;
+  if (trip.status === 'approved') {
+    return {
+      title: 'RKA genehmigt',
+      text: `${trip.destination}: Deine Reisekostenabrechnung wurde genehmigt.`,
+      bg: '#EAF4EC',
+      fg: '#2E7D4F'
+    };
+  }
+  if (trip.status === 'rejected') {
+    return {
+      title: 'RKA abgelehnt',
+      text: `${trip.destination}: Deine Reisekostenabrechnung wurde abgelehnt.`,
+      bg: '#FBEAEA',
+      fg: '#C0392B'
+    };
+  }
+  return null;
 }
 
 function TripCard({ trip, isAdmin, onClick }) {
@@ -466,7 +510,12 @@ function TripDetail({ trip, isAdmin, onBack, onUpdate, onDelete, showToast }) {
   };
 
   const setStatus = (status) => {
-    onUpdate({ ...trip, status });
+    onUpdate({
+      ...trip,
+      status,
+      statusChangedAt: new Date().toISOString(),
+      employeeFeedbackSeen: false
+    });
     showToast(status === 'approved' ? 'Reise genehmigt' : 'Reise abgelehnt');
   };
 
@@ -482,7 +531,20 @@ function TripDetail({ trip, isAdmin, onBack, onUpdate, onDelete, showToast }) {
           {trip.purpose && <div style={styles.detailPurpose}>{trip.purpose}</div>}
           {isAdmin && <div style={styles.detailEmployee}><User size={12} /> {trip.employee}</div>}
         </div>
-        <span style={{ ...styles.statusPill, background: sm.bg, color: sm.fg }}>{sm.label}</span>
+        <div style={{ textAlign: 'right' }}>
+          <span style={{ ...styles.statusPill, background: sm.bg, color: sm.fg }}>{sm.label}</span>
+          {trip.statusChangedAt && (
+            <div style={styles.statusChangedAt}>
+              {new Date(trip.statusChangedAt).toLocaleString('de-DE', {
+                day: '2-digit',
+                month: '2-digit',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+              })}
+            </div>
+          )}
+        </div>
       </div>
 
       <div style={styles.totalBanner}>
@@ -962,6 +1024,9 @@ const styles = {
 
   listWrap: { padding: '16px 16px 100px', position: 'relative', minHeight: 'calc(100vh - 70px)' },
   pendingBanner: { display: 'flex', alignItems: 'center', gap: 8, background: '#FBF3E3', color: '#8A6A1F', padding: '10px 14px', borderRadius: 10, fontSize: 13, marginBottom: 14, fontWeight: 500 },
+  employeeFeedbackBanner: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, padding: '12px 14px', borderRadius: 12, marginBottom: 14, fontSize: 13, lineHeight: 1.4 },
+  employeeFeedbackText: { display: 'flex', flexDirection: 'column', gap: 3 },
+  feedbackCloseBtn: { background: 'none', border: 'none', cursor: 'pointer', padding: 2, display: 'flex', alignItems: 'center' },
   emptyState: { textAlign: 'center', padding: '80px 20px' },
   emptyText: { fontSize: 15, fontWeight: 600, marginTop: 14 },
   emptySub: { fontSize: 13, color: '#8A8F98', marginTop: 4 },
@@ -994,6 +1059,7 @@ const styles = {
   detailMeta: { fontSize: 13, color: '#8A8F98', marginTop: 2 },
   detailPurpose: { fontSize: 13, color: '#5B6270', marginTop: 4 },
   detailEmployee: { fontSize: 12, color: GOLD, marginTop: 6, display: 'flex', alignItems: 'center', gap: 4, fontWeight: 600 },
+  statusChangedAt: { fontSize: 10.5, color: '#8A8F98', marginTop: 6 },
 
   totalBanner: { background: NAVY, borderRadius: 14, padding: '16px 18px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
   totalLabel: { fontSize: 11.5, color: '#B8BEC9', textTransform: 'uppercase', letterSpacing: '0.05em' },
