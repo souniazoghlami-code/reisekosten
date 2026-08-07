@@ -9,33 +9,47 @@ const CUT_BREAKFAST = 5.6;   // 20% von 28€
 const CUT_LUNCH = 11.2;      // 40% von 28€
 const CUT_DINNER = 11.2;     // 40% von 28€
 
-function calcDays(startDate, endDate) {
+function calcDays(startDate, endDate, startTime = '', endTime = '') {
   const s = new Date(startDate + 'T00:00:00');
   const e = new Date(endDate + 'T00:00:00');
   const diffDays = Math.round((e - s) / (1000 * 60 * 60 * 24));
   const days = [];
+
+  let singleDayHours = null;
+  if (diffDays === 0 && startTime && endTime) {
+    const start = new Date(`${startDate}T${startTime}:00`);
+    const end = new Date(`${endDate}T${endTime}:00`);
+    singleDayHours = Math.max(0, (end - start) / (1000 * 60 * 60));
+  }
+
   for (let i = 0; i <= diffDays; i++) {
     const d = new Date(s);
     d.setDate(d.getDate() + i);
     const iso = d.toISOString().slice(0, 10);
     let type = 'full';
-    if (diffDays === 0) type = 'single'; // eintägig, >8h angenommen
+    if (diffDays === 0) type = 'single';
     else if (i === 0) type = 'arrival';
     else if (i === diffDays) type = 'departure';
-    days.push({ date: iso, type });
+    days.push({ date: iso, type, singleDayHours });
   }
   return days;
 }
 
-function dayBaseRate(type) {
-  if (type === 'full') return RATE_FULL_DAY;
-  return RATE_HALF_DAY; // arrival, departure, single
+function dayBaseRate(day) {
+  if (day.type === 'full') return RATE_FULL_DAY;
+  if (day.type === 'single') {
+    // Eintägige Dienstreise: 14 € nur bei mehr als 8 Stunden Abwesenheit.
+    return day.singleDayHours !== null && day.singleDayHours > 8 ? RATE_HALF_DAY : 0;
+  }
+  // Mehrtägige Reise mit Übernachtung: An- und Abreisetag jeweils 14 €,
+  // unabhängig von der konkreten Abwesenheitsdauer an diesen Tagen.
+  return RATE_HALF_DAY;
 }
 
 function calcPerDiem(days, meals) {
   // meals: { [date]: { breakfast: bool, lunch: bool, dinner: bool } }
   return days.map(d => {
-    const base = dayBaseRate(d.type);
+    const base = dayBaseRate(d);
     const m = meals[d.date] || { breakfast: false, lunch: false, dinner: false };
     let cut = 0;
     if (m.breakfast) cut += CUT_BREAKFAST;
@@ -420,12 +434,21 @@ function NewTrip({ user, onCancel, onSave }) {
   const [destination, setDestination] = useState('');
   const [purpose, setPurpose] = useState('');
   const [startDate, setStartDate] = useState('');
+  const [startTime, setStartTime] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [endTime, setEndTime] = useState('');
 
-  const canContinue = destination.trim() && startDate && endDate && startDate <= endDate;
+  const canContinue =
+    destination.trim() &&
+    startDate &&
+    startTime &&
+    endDate &&
+    endTime &&
+    startDate <= endDate &&
+    !(startDate === endDate && endTime <= startTime);
 
   const handleCreate = () => {
-    const days = calcDays(startDate, endDate);
+    const days = calcDays(startDate, endDate, startTime, endTime);
     const meals = {};
     days.forEach(d => { meals[d.date] = { breakfast: false, lunch: false, dinner: false }; });
     const perDiemDays = calcPerDiem(days, meals);
@@ -434,7 +457,7 @@ function NewTrip({ user, onCancel, onSave }) {
       employee: user,
       destination: destination.trim(),
       purpose: purpose.trim(),
-      startDate, endDate,
+      startDate, startTime, endDate, endTime,
       perDiemDays,
       expenses: [],
       status: 'pending',
@@ -452,15 +475,23 @@ function NewTrip({ user, onCancel, onSave }) {
         <input style={styles.input} placeholder="z. B. Kundentermin, Messe..." value={purpose} onChange={e => setPurpose(e.target.value)} />
       </Field>
       <div style={styles.row2}>
-        <Field label="Abreise" style={{ flex: 1 }}>
+        <Field label="Reisebeginn – Datum" style={{ flex: 1 }}>
           <input style={styles.input} type="date" value={startDate} onChange={e => setStartDate(e.target.value)} />
         </Field>
-        <Field label="Rückkehr" style={{ flex: 1 }}>
+        <Field label="Abfahrt – Uhrzeit" style={{ flex: 1 }}>
+          <input style={styles.input} type="time" value={startTime} onChange={e => setStartTime(e.target.value)} />
+        </Field>
+      </div>
+      <div style={styles.row2}>
+        <Field label="Reiseende – Datum" style={{ flex: 1 }}>
           <input style={styles.input} type="date" value={endDate} onChange={e => setEndDate(e.target.value)} />
+        </Field>
+        <Field label="Rückkehr – Uhrzeit" style={{ flex: 1 }}>
+          <input style={styles.input} type="time" value={endTime} onChange={e => setEndTime(e.target.value)} />
         </Field>
       </div>
       <p style={styles.helpText}>
-        Die Verpflegungspauschale wird automatisch nach BMF-Sätzen berechnet (14 € / 28 €, An-/Abreisetag berücksichtigt). Mahlzeitenkürzungen kannst du danach eintragen.
+        Die Verpflegungspauschale wird automatisch berechnet. Bei eintägigen Reisen gibt es 14 € nur bei mehr als 8 Stunden Abwesenheit. Bei mehrtägigen Reisen mit Übernachtung gelten An- und Abreisetag jeweils mit 14 €. Hotel-Check-in und Check-out werden separat beim Hotelbeleg erfasst.
       </p>
       <div style={styles.formActions}>
         <button style={styles.secondaryBtn} onClick={onCancel}>Abbrechen</button>
@@ -492,7 +523,7 @@ function TripDetail({ trip, isAdmin, onBack, onUpdate, onDelete, showToast }) {
     const days = trip.perDiemDays.map(d => d.date === date
       ? { ...d, meals: { ...d.meals, [mealKey]: !d.meals[mealKey] } }
       : d);
-    const rawDays = days.map(d => ({ date: d.date, type: d.type }));
+    const rawDays = days.map(d => ({ date: d.date, type: d.type, singleDayHours: d.singleDayHours ?? null }));
     const mealsMap = {};
     days.forEach(d => { mealsMap[d.date] = d.meals; });
     const recalced = calcPerDiem(rawDays, mealsMap);
@@ -527,7 +558,11 @@ function TripDetail({ trip, isAdmin, onBack, onUpdate, onDelete, showToast }) {
       <div style={styles.detailHeader}>
         <div>
           <div style={styles.detailDest}>{trip.destination}</div>
-          <div style={styles.detailMeta}>{fmtDate(trip.startDate)} – {fmtDate(trip.endDate)}</div>
+          <div style={styles.detailMeta}>
+            {fmtDate(trip.startDate)}{trip.startTime ? ` · ${trip.startTime} Uhr` : ''}
+            {' – '}
+            {fmtDate(trip.endDate)}{trip.endTime ? ` · ${trip.endTime} Uhr` : ''}
+          </div>
           {trip.purpose && <div style={styles.detailPurpose}>{trip.purpose}</div>}
           {isAdmin && <div style={styles.detailEmployee}><User size={12} /> {trip.employee}</div>}
         </div>
@@ -578,7 +613,7 @@ function TripDetail({ trip, isAdmin, onBack, onUpdate, onDelete, showToast }) {
                 <div>
                   <div style={styles.perDiemDate}>{fmtDateShort(d.date)}</div>
                   <div style={styles.perDiemType}>
-                    {d.type === 'arrival' ? 'Anreisetag' : d.type === 'departure' ? 'Abreisetag' : d.type === 'single' ? 'Eintägige Reise' : 'Voller Tag'}
+                    {d.type === 'arrival' ? 'Anreisetag' : d.type === 'departure' ? 'Abreisetag' : d.type === 'single' ? `Eintägige Reise${d.singleDayHours !== null && d.singleDayHours !== undefined ? ` · ${d.singleDayHours.toFixed(1)} Std.` : ''}` : 'Voller Tag'}
                     {' · '}{fmtEUR(d.base)}
                   </div>
                 </div>
@@ -683,9 +718,18 @@ function EditTripModal({ trip, onClose, onSave }) {
   const [destination, setDestination] = useState(trip.destination || '');
   const [purpose, setPurpose] = useState(trip.purpose || '');
   const [startDate, setStartDate] = useState(trip.startDate || '');
+  const [startTime, setStartTime] = useState(trip.startTime || '');
   const [endDate, setEndDate] = useState(trip.endDate || '');
+  const [endTime, setEndTime] = useState(trip.endTime || '');
 
-  const canSave = destination.trim() && startDate && endDate && startDate <= endDate;
+  const canSave =
+    destination.trim() &&
+    startDate &&
+    startTime &&
+    endDate &&
+    endTime &&
+    startDate <= endDate &&
+    !(startDate === endDate && endTime <= startTime);
 
   const handleSave = () => {
     const oldMeals = {};
@@ -693,7 +737,7 @@ function EditTripModal({ trip, onClose, onSave }) {
       oldMeals[d.date] = d.meals || { breakfast: false, lunch: false, dinner: false };
     });
 
-    const days = calcDays(startDate, endDate);
+    const days = calcDays(startDate, endDate, startTime, endTime);
     const meals = {};
     days.forEach(d => {
       meals[d.date] = oldMeals[d.date] || {
@@ -710,7 +754,9 @@ function EditTripModal({ trip, onClose, onSave }) {
       destination: destination.trim(),
       purpose: purpose.trim(),
       startDate,
+      startTime,
       endDate,
+      endTime,
       perDiemDays,
       status: trip.status === 'approved' ? 'pending' : trip.status,
       updatedAt: new Date().toISOString()
@@ -744,7 +790,7 @@ function EditTripModal({ trip, onClose, onSave }) {
         </Field>
 
         <div style={styles.row2}>
-          <Field label="Abreise" style={{ flex: 1 }}>
+          <Field label="Reisebeginn – Datum" style={{ flex: 1 }}>
             <input
               style={styles.input}
               type="date"
@@ -753,7 +799,18 @@ function EditTripModal({ trip, onClose, onSave }) {
             />
           </Field>
 
-          <Field label="Rückkehr" style={{ flex: 1 }}>
+          <Field label="Abfahrt – Uhrzeit" style={{ flex: 1 }}>
+            <input
+              style={styles.input}
+              type="time"
+              value={startTime}
+              onChange={e => setStartTime(e.target.value)}
+            />
+          </Field>
+        </div>
+
+        <div style={styles.row2}>
+          <Field label="Reiseende – Datum" style={{ flex: 1 }}>
             <input
               style={styles.input}
               type="date"
@@ -761,10 +818,20 @@ function EditTripModal({ trip, onClose, onSave }) {
               onChange={e => setEndDate(e.target.value)}
             />
           </Field>
+
+          <Field label="Rückkehr – Uhrzeit" style={{ flex: 1 }}>
+            <input
+              style={styles.input}
+              type="time"
+              value={endTime}
+              onChange={e => setEndTime(e.target.value)}
+            />
+          </Field>
         </div>
 
         <p style={styles.helpText}>
-          Die Verpflegungstage werden nach dem Speichern automatisch neu berechnet.
+          Die Verpflegungstage werden nach Datum und Uhrzeit automatisch neu berechnet.
+          Hotel-Check-in und Check-out bleiben davon unabhängig und werden beim Hotelbeleg erfasst.
           Bereits erfasste Belege bleiben erhalten. Bei einer bereits genehmigten Reise
           wird der Status wieder auf „Ausstehend“ gesetzt.
         </p>
@@ -917,7 +984,7 @@ function exportTripCSV(trip) {
   lines.push(['Mitarbeiter', trip.employee]);
   lines.push(['Ziel', trip.destination]);
   lines.push(['Anlass', trip.purpose || '']);
-  lines.push(['Zeitraum', `${fmtDate(trip.startDate)} - ${fmtDate(trip.endDate)}`]);
+  lines.push(['Zeitraum', `${fmtDate(trip.startDate)}${trip.startTime ? ' ' + trip.startTime + ' Uhr' : ''} - ${fmtDate(trip.endDate)}${trip.endTime ? ' ' + trip.endTime + ' Uhr' : ''}`]);
   lines.push(['Status', statusMeta(trip.status).label]);
   lines.push([]);
   lines.push(['Verpflegungsmehraufwand']);
@@ -970,7 +1037,7 @@ function exportTripPDF(trip) {
       <div><strong>Mitarbeiter:</strong> ${trip.employee}</div>
       <div><strong>Ziel:</strong> ${trip.destination}</div>
       <div><strong>Anlass:</strong> ${trip.purpose || '—'}</div>
-      <div><strong>Zeitraum:</strong> ${fmtDate(trip.startDate)} – ${fmtDate(trip.endDate)}</div>
+      <div><strong>Zeitraum:</strong> ${fmtDate(trip.startDate)}${trip.startTime ? ' · ' + trip.startTime + ' Uhr' : ''} – ${fmtDate(trip.endDate)}${trip.endTime ? ' · ' + trip.endTime + ' Uhr' : ''}</div>
       <div><strong>Status:</strong> ${statusMeta(trip.status).label}</div>
     </div>
 
