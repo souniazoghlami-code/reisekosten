@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Plane, Plus, Check, X, Download, FileText, ChevronLeft, Trash2, LogOut, Clock, Euro, Calendar, User, ChevronRight, AlertCircle, Camera, Image as ImageIcon, Pencil } from 'lucide-react';
-import { storage } from './storage.js';
+import { storage, receiptStorage } from './storage.js';
 
 // ---------- BMF Verpflegungsmehraufwand (Inland, gültig 2026) ----------
 const RATE_FULL_DAY = 28;
@@ -129,24 +129,15 @@ async function saveAll(trips) {
   }
 }
 async function saveReceiptImage(expenseId, dataUrl) {
-  try {
-    await storage.set(`receipt:${expenseId}`, dataUrl);
-  } catch (e) {
-    console.error('Beleg-Foto speichern fehlgeschlagen', e);
-  }
+  return await receiptStorage.upload(expenseId, dataUrl);
 }
+
 async function loadReceiptImage(expenseId) {
-  try {
-    const res = await storage.get(`receipt:${expenseId}`);
-    return res ? res.value : null;
-  } catch (e) {
-    return null;
-  }
+  return await receiptStorage.download(expenseId);
 }
+
 async function deleteReceiptImage(expenseId) {
-  try {
-    await storage.delete(`receipt:${expenseId}`);
-  } catch (e) { /* ignore */ }
+  return await receiptStorage.delete(expenseId);
 }
 
 export default function App() {
