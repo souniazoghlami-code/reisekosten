@@ -771,27 +771,37 @@ function PhotoViewerModal({ expenseId, onClose }) {
 
   return (
     <div style={styles.photoViewerOverlay} onClick={onClose}>
-      {src ? (
-        <img src={src} alt="Beleg" style={styles.photoViewerImg} onClick={e => e.stopPropagation()} />
-     <a
-  href={src}
-  download={`Beleg-${expenseId}.jpg`}
-  onClick={e => e.stopPropagation()}
-  style={{
-    position: 'absolute',
-    bottom: '24px',
-    left: '50%',
-    transform: 'translateX(-50%)',
-    background: '#ffffff',
-    color: '#1A2332',
-    padding: '10px 18px',
-    borderRadius: '8px',
-    textDecoration: 'none',
-    fontWeight: 600
-  }}
->
-  Beleg herunterladen
-</a> ) : (
+     {src ? (
+  <>
+    <img
+      src={src}
+      alt="Beleg"
+      style={styles.photoViewerImg}
+      onClick={e => e.stopPropagation()}
+    />
+
+    <a
+      href={src}
+      download={`Beleg-${expenseId}.jpg`}
+      onClick={e => e.stopPropagation()}
+      style={{
+        position: 'absolute',
+        bottom: '24px',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        background: '#ffffff',
+        color: '#1A2332',
+        padding: '10px 18px',
+        borderRadius: '8px',
+        textDecoration: 'none',
+        fontWeight: 600,
+        zIndex: 10
+      }}
+    >
+      Beleg herunterladen
+    </a>
+  </>
+) : (
         <div style={styles.loadingSpinner} />
       )}
       <button style={styles.photoViewerClose} onClick={onClose}><X size={22} color="#fff" /></button>
