@@ -69,6 +69,10 @@ function fmtDate(iso) {
 function fmtDateShort(iso) {
   return new Date(iso + 'T00:00:00').toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' });
 }
+function fmtDateTime(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' });
+}
 
 function toLocalISODate(date) {
   const y = date.getFullYear();
@@ -247,11 +251,21 @@ export default function App() {
             isAdmin={isAdmin}
             onBack={() => setView('list')}
             onUpdate={async (updated) => {
+              const original = trips.find(t => t.id === updated.id);
+              if (!isAdmin && original && (original.status === 'pending' || original.status === 'approved')) {
+                showToast('Diese Abrechnung ist gesperrt');
+                return;
+              }
               const next = trips.map(t => t.id === updated.id ? updated : t);
               await persist(next);
               setActiveTrip(updated);
             }}
             onDelete={async (id) => {
+              const original = trips.find(t => t.id === id);
+              if (isAdmin || !original || !['draft', 'rejected'].includes(original.status)) {
+                showToast('Diese Abrechnung kann nicht gelöscht werden');
+                return;
+              }
               const next = trips.filter(t => t.id !== id);
               await persist(next);
               setView('list');
@@ -367,16 +381,17 @@ function TripList({ trips, isAdmin, onSelect, onNew, onDismissFeedback }) {
         </div>
       )}
 
-      <button style={styles.fab} onClick={onNew}><Plus size={26} color="#F7F5F0" /></button>
+      {!isAdmin && <button style={styles.fab} onClick={onNew}><Plus size={26} color="#F7F5F0" /></button>}
     </div>
   );
 }
 
 function statusMeta(status) {
   switch (status) {
+    case 'draft': return { label: 'Entwurf', bg: '#ECEFF3', fg: '#5B6270' };
     case 'approved': return { label: 'Genehmigt', bg: '#EAF4EC', fg: '#2E7D4F' };
-    case 'rejected': return { label: 'Abgelehnt', bg: '#FBEAEA', fg: '#C0392B' };
-    default: return { label: 'Ausstehend', bg: '#FBF3E3', fg: '#B8862F' };
+    case 'rejected': return { label: 'Korrektur erforderlich', bg: '#FBEAEA', fg: '#C0392B' };
+    default: return { label: 'Zur Genehmigung', bg: '#FBF3E3', fg: '#B8862F' };
   }
 }
 
@@ -393,7 +408,9 @@ function employeeFeedbackMeta(trip) {
   if (trip.status === 'rejected') {
     return {
       title: 'RKA abgelehnt',
-      text: `${trip.destination}: Deine Reisekostenabrechnung wurde abgelehnt.`,
+      text: trip.adminNote
+        ? `${trip.destination}: ${trip.adminNote}`
+        : `${trip.destination}: Deine Reisekostenabrechnung wurde abgelehnt.`,
       bg: '#FBEAEA',
       fg: '#C0392B'
     };
@@ -473,7 +490,7 @@ function NewTrip({ user, onCancel, onSave }) {
       endTime,
       perDiemDays,
       expenses: [],
-      status: 'pending',
+      status: 'draft',
       createdAt: new Date().toISOString(),
     };
 
@@ -590,11 +607,15 @@ function TripDetail({ trip, isAdmin, onBack, onUpdate, onDelete, showToast }) {
   const [tab, setTab] = useState('perdiem'); // perdiem | expenses
   const [showAddExpense, setShowAddExpense] = useState(false);
   const [showEditTrip, setShowEditTrip] = useState(false);
+  const [showRejectModal, setShowRejectModal] = useState(false);
+  const [employeeConfirmed, setEmployeeConfirmed] = useState(false);
   const [viewPhoto, setViewPhoto] = useState(null); // expenseId currently viewed full-screen
   const sm = statusMeta(trip.status);
   const total = tripTotal(trip);
+  const canEdit = !isAdmin && (trip.status === 'draft' || trip.status === 'rejected');
 
   const toggleMeal = (date, mealKey) => {
+    if (!canEdit) return;
     const days = trip.perDiemDays.map(d => d.date === date
       ? { ...d, meals: { ...d.meals, [mealKey]: !d.meals[mealKey] } }
       : d);
@@ -606,23 +627,49 @@ function TripDetail({ trip, isAdmin, onBack, onUpdate, onDelete, showToast }) {
   };
 
   const addExpense = (expense) => {
+    if (!canEdit) return;
     onUpdate({ ...trip, expenses: [...(trip.expenses || []), expense] });
     setShowAddExpense(false);
   };
 
   const removeExpense = (id) => {
+    if (!canEdit) return;
     onUpdate({ ...trip, expenses: trip.expenses.filter(e => e.id !== id) });
     deleteReceiptImage(id);
   };
 
-  const setStatus = (status) => {
+  const reviewTrip = (status, note = '') => {
+    const now = new Date().toISOString();
     onUpdate({
       ...trip,
       status,
-      statusChangedAt: new Date().toISOString(),
-      employeeFeedbackSeen: false
+      adminNote: status === 'rejected' ? note.trim() : '',
+      reviewedAt: now,
+      reviewedBy: ADMIN_NAME,
+      statusChangedAt: now,
+      employeeFeedbackSeen: false,
+      reviewHistory: [
+        ...(trip.reviewHistory || []),
+        { status, note: note.trim(), reviewedAt: now, reviewedBy: ADMIN_NAME }
+      ]
     });
-    showToast(status === 'approved' ? 'Reise genehmigt' : 'Reise abgelehnt');
+    setShowRejectModal(false);
+    showToast(status === 'approved' ? 'Reise genehmigt und gesperrt' : 'Zur Korrektur zurückgegeben');
+  };
+
+  const submitForApproval = () => {
+    if (!employeeConfirmed) return;
+    const now = new Date().toISOString();
+    onUpdate({
+      ...trip,
+      status: 'pending',
+      submittedAt: now,
+      employeeConfirmedAt: now,
+      employeeConfirmedBy: trip.employee,
+      adminNote: ''
+    });
+    setEmployeeConfirmed(false);
+    showToast('Zur Genehmigung eingereicht');
   };
 
   const perDiemTotal = (trip.perDiemDays || []).reduce((s, d) => s + d.amount, 0);
@@ -668,10 +715,30 @@ function TripDetail({ trip, isAdmin, onBack, onUpdate, onDelete, showToast }) {
         </div>
       </div>
 
+      {trip.status === 'approved' && (
+        <div style={styles.lockedNotice}><Check size={16} /> Genehmigt – diese Abrechnung ist endgültig gesperrt.</div>
+      )}
+
+      {!isAdmin && trip.status === 'pending' && (
+        <div style={styles.pendingNotice}><Clock size={16} /> Eingereicht – Änderungen sind während der Prüfung gesperrt.</div>
+      )}
+
+      {trip.status === 'rejected' && trip.adminNote && (
+        <div style={styles.adminNoteBox}>
+          <div style={styles.adminNoteTitle}>Hinweis der Freigabe</div>
+          <div style={styles.adminNoteText}>{trip.adminNote}</div>
+          {trip.reviewedAt && <div style={styles.adminNoteMeta}>{trip.reviewedBy || ADMIN_NAME} · {fmtDateTime(trip.reviewedAt)}</div>}
+        </div>
+      )}
+
+      {trip.employeeConfirmedAt && (
+        <div style={styles.auditInfo}>Vom Mitarbeiter bestätigt: {trip.employeeConfirmedBy || trip.employee} · {fmtDateTime(trip.employeeConfirmedAt)}</div>
+      )}
+
       {isAdmin && trip.status === 'pending' && (
         <div style={styles.approveRow}>
-          <button style={styles.rejectBtn} onClick={() => setStatus('rejected')}><X size={16} /> Ablehnen</button>
-          <button style={styles.approveBtn} onClick={() => setStatus('approved')}><Check size={16} /> Genehmigen</button>
+          <button style={styles.rejectBtn} onClick={() => setShowRejectModal(true)}><X size={16} /> Ablehnen mit Notiz</button>
+          <button style={styles.approveBtn} onClick={() => reviewTrip('approved')}><Check size={16} /> Genehmigen</button>
         </div>
       )}
 
@@ -695,9 +762,9 @@ function TripDetail({ trip, isAdmin, onBack, onUpdate, onDelete, showToast }) {
                 <div style={styles.perDiemAmount}>{fmtEUR(d.amount)}</div>
               </div>
               <div style={styles.mealRow}>
-                <MealChip label="Frühstück gestellt" active={d.meals.breakfast} onClick={() => toggleMeal(d.date, 'breakfast')} />
-                <MealChip label="Mittag gestellt" active={d.meals.lunch} onClick={() => toggleMeal(d.date, 'lunch')} />
-                <MealChip label="Abend gestellt" active={d.meals.dinner} onClick={() => toggleMeal(d.date, 'dinner')} />
+                <MealChip label="Frühstück gestellt" active={d.meals.breakfast} disabled={!canEdit} onClick={() => toggleMeal(d.date, 'breakfast')} />
+                <MealChip label="Mittag gestellt" active={d.meals.lunch} disabled={!canEdit} onClick={() => toggleMeal(d.date, 'lunch')} />
+                <MealChip label="Abend gestellt" active={d.meals.dinner} disabled={!canEdit} onClick={() => toggleMeal(d.date, 'dinner')} />
               </div>
             </div>
           ))}
@@ -723,21 +790,37 @@ function TripDetail({ trip, isAdmin, onBack, onUpdate, onDelete, showToast }) {
                 {e.hasReceipt && (
                   <button style={styles.photoIconBtn} onClick={() => setViewPhoto(e.id)}><ImageIcon size={15} color="#5B6270" /></button>
                 )}
-                <button style={styles.trashBtn} onClick={() => removeExpense(e.id)}><Trash2 size={15} color="#C4C9D1" /></button>
+                {canEdit && <button style={styles.trashBtn} onClick={() => removeExpense(e.id)}><Trash2 size={15} color="#C4C9D1" /></button>}
               </div>
             </div>
           ))}
-          <button style={styles.addExpenseBtn} onClick={() => setShowAddExpense(true)}><Plus size={16} /> Beleg hinzufügen</button>
+          {canEdit && <button style={styles.addExpenseBtn} onClick={() => setShowAddExpense(true)}><Plus size={16} /> Beleg hinzufügen</button>}
+        </div>
+      )}
+
+      {canEdit && (
+        <div style={styles.confirmBox}>
+          <label style={styles.confirmLabel}>
+            <input type="checkbox" checked={employeeConfirmed} onChange={e => setEmployeeConfirmed(e.target.checked)} />
+            <span>Ich bestätige, dass meine Angaben vollständig und richtig sind, die Kosten dienstlich veranlasst wurden und die Belege den tatsächlichen Ausgaben entsprechen.</span>
+          </label>
+          <button
+            style={{ ...styles.submitBtn, opacity: employeeConfirmed ? 1 : 0.4 }}
+            disabled={!employeeConfirmed}
+            onClick={submitForApproval}
+          >
+            <Check size={16} /> Zur Genehmigung einreichen
+          </button>
         </div>
       )}
 
       <div style={styles.exportRow}>
-        {!isAdmin && (
+        {canEdit && (
           <button style={styles.exportBtn} onClick={() => setShowEditTrip(true)}><Pencil size={15} /> Bearbeiten</button>
         )}
         <button style={styles.exportBtn} onClick={() => exportTripPDF(trip)}><FileText size={15} /> PDF</button>
         <button style={styles.exportBtn} onClick={() => exportTripCSV(trip)}><Download size={15} /> CSV</button>
-        <button style={styles.deleteBtn} onClick={() => { if (confirm('Reise wirklich löschen?')) onDelete(trip.id); }}><Trash2 size={15} /></button>
+        {canEdit && <button style={styles.deleteBtn} onClick={() => { if (confirm('Reise wirklich löschen?')) onDelete(trip.id); }}><Trash2 size={15} /></button>}
       </div>
 
       {showEditTrip && (
@@ -754,9 +837,48 @@ function TripDetail({ trip, isAdmin, onBack, onUpdate, onDelete, showToast }) {
       {showAddExpense && (
         <AddExpenseModal onClose={() => setShowAddExpense(false)} onAdd={addExpense} />
       )}
+      {showRejectModal && (
+        <RejectModal onClose={() => setShowRejectModal(false)} onReject={(note) => reviewTrip('rejected', note)} />
+      )}
       {viewPhoto && (
         <PhotoViewerModal expenseId={viewPhoto} onClose={() => setViewPhoto(null)} />
       )}
+    </div>
+  );
+}
+
+function RejectModal({ onClose, onReject }) {
+  const [note, setNote] = useState('');
+  const canReject = note.trim().length >= 3;
+
+  return (
+    <div style={styles.modalOverlay} onClick={onClose}>
+      <div style={styles.modalCard} onClick={e => e.stopPropagation()}>
+        <div style={styles.modalHeader}>
+          <span style={styles.modalTitle}>Ablehnung begründen</span>
+          <button style={styles.iconBtn} onClick={onClose}><X size={20} color="#8A8F98" /></button>
+        </div>
+        <Field label="Notiz für den Mitarbeiter *">
+          <textarea
+            style={{ ...styles.input, minHeight: 110, resize: 'vertical' }}
+            placeholder="z. B. Bitte den fehlenden Hotelbeleg hochladen und erneut einreichen."
+            value={note}
+            onChange={e => setNote(e.target.value)}
+            autoFocus
+          />
+        </Field>
+        <p style={styles.helpText}>Der Mitarbeiter sieht diese Begründung direkt in seiner Abrechnung und kann anschließend korrigieren.</p>
+        <div style={styles.formActions}>
+          <button style={styles.secondaryBtn} onClick={onClose}>Abbrechen</button>
+          <button
+            style={{ ...styles.rejectConfirmBtn, opacity: canReject ? 1 : 0.4 }}
+            disabled={!canReject}
+            onClick={() => onReject(note)}
+          >
+            Mit Notiz ablehnen
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -809,9 +931,13 @@ function PhotoViewerModal({ expenseId, onClose }) {
   );
 }
 
-function MealChip({ label, active, onClick }) {
+function MealChip({ label, active, disabled, onClick }) {
   return (
-    <button style={{ ...styles.mealChip, ...(active ? styles.mealChipActive : {}) }} onClick={onClick}>
+    <button
+      disabled={disabled}
+      style={{ ...styles.mealChip, ...(active ? styles.mealChipActive : {}), ...(disabled ? styles.mealChipDisabled : {}) }}
+      onClick={onClick}
+    >
       {label}
     </button>
   );
@@ -863,7 +989,7 @@ function EditTripModal({ trip, onClose, onSave }) {
       endDate,
       endTime,
       perDiemDays,
-      status: trip.status === 'approved' ? 'pending' : trip.status,
+      status: trip.status,
       updatedAt: new Date().toISOString()
     });
   };
@@ -937,8 +1063,8 @@ function EditTripModal({ trip, onClose, onSave }) {
         <p style={styles.helpText}>
           Die Verpflegung wird anhand deiner tatsächlichen Abfahrts- und Rückkehrzeit berechnet.
           Hotel-Check-in und Check-out werden separat beim Hotelbeleg erfasst.
-          Bereits erfasste Belege bleiben erhalten. Bei einer bereits genehmigten Reise
-          wird der Status nach einer Änderung wieder auf „Ausstehend“ gesetzt.
+          Bereits erfasste Belege bleiben erhalten. Eingereichte und genehmigte
+          Abrechnungen können nicht mehr bearbeitet werden.
         </p>
 
         <div style={styles.formActions}>
@@ -1066,11 +1192,18 @@ function AddExpenseModal({ onClose, onAdd }) {
               <button style={styles.photoRemoveBtn} onClick={() => setPhoto(null)}><X size={14} color="#fff" /></button>
             </div>
           ) : (
-            <label style={styles.photoUploadBtn}>
-              <Camera size={18} color="#5B6270" />
-              <span>{uploading ? 'Wird verarbeitet…' : 'Foto aufnehmen oder auswählen'}</span>
-              <input type="file" accept="image/*" capture="environment" onChange={handlePhotoSelect} style={{ display: 'none' }} />
-            </label>
+            <div style={styles.photoSourceRow}>
+              <label style={styles.photoChoiceBtn}>
+                <Camera size={18} color="#5B6270" />
+                <span>{uploading ? 'Wird verarbeitet…' : 'Kamera'}</span>
+                <input type="file" accept="image/*" capture="environment" onChange={handlePhotoSelect} style={{ display: 'none' }} />
+              </label>
+              <label style={styles.photoChoiceBtn}>
+                <ImageIcon size={18} color="#5B6270" />
+                <span>Aus Fotos wählen</span>
+                <input type="file" accept="image/*" onChange={handlePhotoSelect} style={{ display: 'none' }} />
+              </label>
+            </div>
           )}
         </Field>
         <div style={styles.formActions}>
@@ -1091,6 +1224,9 @@ function exportTripCSV(trip) {
   lines.push(['Anlass', trip.purpose || '']);
   lines.push(['Zeitraum', `${fmtDate(trip.startDate)}${trip.startTime ? ' ' + trip.startTime + ' Uhr' : ''} - ${fmtDate(trip.endDate)}${trip.endTime ? ' ' + trip.endTime + ' Uhr' : ''}`]);
   lines.push(['Status', statusMeta(trip.status).label]);
+  lines.push(['Vom Mitarbeiter bestätigt', trip.employeeConfirmedAt ? `${trip.employeeConfirmedBy || trip.employee}, ${fmtDateTime(trip.employeeConfirmedAt)}` : 'Nicht dokumentiert']);
+  lines.push(['Geprüft von', trip.reviewedAt ? `${trip.reviewedBy || ADMIN_NAME}, ${fmtDateTime(trip.reviewedAt)}` : '']);
+  if (trip.adminNote) lines.push(['Hinweis der Freigabe', trip.adminNote]);
   lines.push([]);
   lines.push(['Verpflegungsmehraufwand']);
   lines.push(['Datum', 'Typ', 'Grundbetrag', 'Kürzung', 'Betrag']);
@@ -1144,6 +1280,9 @@ function exportTripPDF(trip) {
       <div><strong>Anlass:</strong> ${trip.purpose || '—'}</div>
       <div><strong>Zeitraum:</strong> ${fmtDate(trip.startDate)}${trip.startTime ? ' · ' + trip.startTime + ' Uhr' : ''} – ${fmtDate(trip.endDate)}${trip.endTime ? ' · ' + trip.endTime + ' Uhr' : ''}</div>
       <div><strong>Status:</strong> ${statusMeta(trip.status).label}</div>
+      <div><strong>Mitarbeiterbestätigung:</strong> ${trip.employeeConfirmedAt ? `${trip.employeeConfirmedBy || trip.employee}, ${fmtDateTime(trip.employeeConfirmedAt)}` : 'Nicht dokumentiert'}</div>
+      ${trip.reviewedAt ? `<div><strong>Geprüft von:</strong> ${trip.reviewedBy || ADMIN_NAME}, ${fmtDateTime(trip.reviewedAt)}</div>` : ''}
+      ${trip.adminNote ? `<div><strong>Hinweis der Freigabe:</strong> ${trip.adminNote}</div>` : ''}
     </div>
 
     <div class="section-title">Verpflegungsmehraufwand</div>
@@ -1242,6 +1381,14 @@ const styles = {
   approveRow: { display: 'flex', gap: 10, marginBottom: 16 },
   approveBtn: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '11px', borderRadius: 10, border: 'none', background: '#2E7D4F', color: '#fff', fontSize: 13.5, fontWeight: 600, cursor: 'pointer' },
   rejectBtn: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '11px', borderRadius: 10, border: '1.5px solid #E8B4B0', background: '#fff', color: '#C0392B', fontSize: 13.5, fontWeight: 600, cursor: 'pointer' },
+  rejectConfirmBtn: { flex: 1, padding: '13px', borderRadius: 10, border: 'none', background: '#C0392B', color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' },
+  lockedNotice: { display: 'flex', alignItems: 'center', gap: 8, background: '#EAF4EC', color: '#2E7D4F', padding: '11px 13px', borderRadius: 10, fontSize: 12.5, fontWeight: 600, marginBottom: 14 },
+  pendingNotice: { display: 'flex', alignItems: 'center', gap: 8, background: '#FBF3E3', color: '#8A6A1F', padding: '11px 13px', borderRadius: 10, fontSize: 12.5, fontWeight: 600, marginBottom: 14 },
+  adminNoteBox: { background: '#FBEAEA', border: '1px solid #E8B4B0', borderRadius: 12, padding: '13px 14px', marginBottom: 14 },
+  adminNoteTitle: { fontSize: 12.5, fontWeight: 700, color: '#C0392B', marginBottom: 5 },
+  adminNoteText: { fontSize: 13.5, color: NAVY, lineHeight: 1.45 },
+  adminNoteMeta: { fontSize: 11.5, color: '#8A8F98', marginTop: 8 },
+  auditInfo: { fontSize: 11.5, color: '#5B6270', background: '#F1EFEA', padding: '9px 11px', borderRadius: 9, marginBottom: 14 },
 
   tabs: { display: 'flex', gap: 4, background: '#ECE9E3', borderRadius: 10, padding: 4, marginBottom: 14 },
   tab: { flex: 1, padding: '9px', border: 'none', background: 'transparent', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer', color: '#5B6270' },
@@ -1256,6 +1403,7 @@ const styles = {
   mealRow: { display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' },
   mealChip: { fontSize: 11, padding: '6px 10px', borderRadius: 20, border: '1.5px solid #E2E4E8', background: '#fff', cursor: 'pointer', color: '#5B6270', fontWeight: 500 },
   mealChipActive: { background: NAVY, borderColor: NAVY, color: OFFWHITE },
+  mealChipDisabled: { cursor: 'default', opacity: 0.72 },
 
   expenseList: { display: 'flex', flexDirection: 'column', gap: 8 },
   expenseCard: { background: '#fff', border: '1px solid #ECE9E3', borderRadius: 12, padding: '12px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
@@ -1266,6 +1414,9 @@ const styles = {
   expenseAmount: { fontSize: 14.5, fontWeight: 700 },
   trashBtn: { background: 'none', border: 'none', cursor: 'pointer', padding: 4, display: 'flex' },
   addExpenseBtn: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '12px', borderRadius: 10, border: `1.5px dashed ${GOLD}`, background: 'transparent', color: GOLD, fontSize: 13.5, fontWeight: 600, cursor: 'pointer', marginTop: 4 },
+  confirmBox: { background: '#fff', border: '1.5px solid #E2E4E8', borderRadius: 12, padding: 14, marginTop: 18 },
+  confirmLabel: { display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: 12.5, lineHeight: 1.45, color: '#5B6270', cursor: 'pointer' },
+  submitBtn: { width: '100%', marginTop: 13, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, padding: '12px', borderRadius: 10, border: 'none', background: NAVY, color: OFFWHITE, fontSize: 13.5, fontWeight: 600, cursor: 'pointer' },
 
   exportRow: { display: 'flex', gap: 10, marginTop: 24 },
   exportBtn: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '11px', borderRadius: 10, border: '1.5px solid #E2E4E8', background: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer', color: NAVY },
@@ -1276,7 +1427,8 @@ const styles = {
   modalHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 },
   modalTitle: { fontSize: 16, fontWeight: 700 },
   computedAmount: { fontSize: 13.5, fontWeight: 600, color: GOLD, marginBottom: 16 },
-  photoUploadBtn: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px', borderRadius: 10, border: '1.5px dashed #C4C9D1', background: '#fff', color: '#5B6270', fontSize: 13.5, fontWeight: 500, cursor: 'pointer' },
+  photoSourceRow: { display: 'flex', gap: 10 },
+  photoChoiceBtn: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, padding: '14px 10px', borderRadius: 10, border: '1.5px dashed #C4C9D1', background: '#fff', color: '#5B6270', fontSize: 13, fontWeight: 500, cursor: 'pointer' },
   photoPreviewWrap: { position: 'relative', width: 100, height: 100 },
   photoPreview: { width: 100, height: 100, objectFit: 'cover', borderRadius: 10, border: '1.5px solid #E2E4E8' },
   photoRemoveBtn: { position: 'absolute', top: -6, right: -6, width: 22, height: 22, borderRadius: '50%', background: '#C0392B', border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' },
