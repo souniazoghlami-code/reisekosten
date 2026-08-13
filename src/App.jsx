@@ -114,6 +114,12 @@ const EXPENSE_CATEGORIES = [
   'Bahn/ÖPNV', 'PKW (Kilometergeld)', 'Tanken/Kraftstoff', 'Taxi/Mietwagen', 'Übernachtung', 'Parken', 'Bewirtung (Geschäftsessen)', 'Sonstiges'
 ];
 
+const PAID_BY_OPTIONS = [
+  { value: 'employee', label: 'Vom Mitarbeiter bezahlt' },
+  { value: 'companyCard', label: 'Mit Firmenkarte bezahlt' },
+  { value: 'company', label: 'Direkt vom Unternehmen bezahlt' },
+];
+
 const KM_RATE = 0.30; // gesetzliches Kilometergeld PKW
 
 // ---------- Storage helpers ----------
@@ -226,6 +232,12 @@ export default function App() {
             isAdmin={isAdmin}
             onSelect={(t) => { setActiveTrip(t); setView('detail'); }}
             onNew={() => setView('new')}
+            onUpdateMany={async (updates) => {
+              const byId = new Map(updates.map(item => [item.id, item]));
+              const next = trips.map(t => byId.get(t.id) || t);
+              await persist(next);
+            }}
+            showToast={showToast}
             onDismissFeedback={async (tripId) => {
               const next = trips.map(t => t.id === tripId ? { ...t, employeeFeedbackSeen: true } : t);
               await persist(next);
@@ -337,7 +349,7 @@ function TopBar({ user, isAdmin, view, setView, onLogout }) {
 }
 
 // ================= TRIP LIST =================
-function TripList({ trips, isAdmin, onSelect, onNew, onDismissFeedback }) {
+function TripList({ trips, isAdmin, onSelect, onNew, onUpdateMany, showToast, onDismissFeedback }) {
   const sorted = [...trips].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
   const pending = trips.filter(t => t.status === 'pending').length;
   const feedbackTrip = !isAdmin
@@ -369,6 +381,10 @@ function TripList({ trips, isAdmin, onSelect, onNew, onDismissFeedback }) {
         </div>
       )}
 
+      {isAdmin && (
+        <PayrollPanel trips={trips} onUpdateMany={onUpdateMany} showToast={showToast} />
+      )}
+
       {sorted.length === 0 ? (
         <div style={styles.emptyState}>
           <Plane size={40} color="#D8DCE3" />
@@ -386,6 +402,80 @@ function TripList({ trips, isAdmin, onSelect, onNew, onDismissFeedback }) {
   );
 }
 
+function PayrollPanel({ trips, onUpdateMany, showToast }) {
+  const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
+  const monthTrips = trips.filter(t => t.status === 'approved' && payrollMonthForTrip(t) === month);
+  const ready = monthTrips.filter(t => !t.payrollStatus || t.payrollStatus === 'ready');
+  const submitted = monthTrips.filter(t => t.payrollStatus === 'submitted');
+  const paid = monthTrips.filter(t => t.payrollStatus === 'paid');
+  const amount = monthTrips.reduce((sum, trip) => sum + employeeReimbursementTotal(trip), 0);
+
+  const markSubmitted = async () => {
+    if (ready.length === 0) return;
+    const now = new Date().toISOString();
+    await onUpdateMany(ready.map(trip => ({
+      ...trip,
+      payrollMonth: month,
+      payrollStatus: 'submitted',
+      payrollSubmittedAt: now,
+      payrollStatusChangedAt: now,
+      employeeFeedbackSeen: false,
+    })));
+    showToast(`${ready.length} Abrechnung${ready.length === 1 ? '' : 'en'} als übermittelt markiert`);
+  };
+
+  const markPaid = async () => {
+    if (submitted.length === 0) return;
+    const now = new Date().toISOString();
+    await onUpdateMany(submitted.map(trip => ({
+      ...trip,
+      payrollStatus: 'paid',
+      payrollPaidAt: now,
+      payrollStatusChangedAt: now,
+      employeeFeedbackSeen: false,
+    })));
+    showToast(`${submitted.length} Abrechnung${submitted.length === 1 ? '' : 'en'} als ausgezahlt markiert`);
+  };
+
+  return (
+    <section style={styles.payrollPanel}>
+      <div style={styles.payrollHeader}>
+        <div>
+          <div style={styles.payrollEyebrow}>Gehaltsabrechnung</div>
+          <div style={styles.payrollAmount}>{fmtEUR(amount)}</div>
+        </div>
+        <input
+          type="month"
+          value={month}
+          onChange={e => setMonth(e.target.value)}
+          style={styles.monthInput}
+          aria-label="Abrechnungsmonat"
+        />
+      </div>
+      <div style={styles.payrollStats}>
+        <span>{ready.length} vorgemerkt</span>
+        <span>{submitted.length} übermittelt</span>
+        <span>{paid.length} ausgezahlt</span>
+      </div>
+      {monthTrips.length === 0 ? (
+        <div style={styles.payrollEmpty}>Für diesen Monat liegen noch keine genehmigten Abrechnungen vor.</div>
+      ) : (
+        <div style={styles.payrollActions}>
+          <button style={styles.payrollSecondaryBtn} onClick={() => exportMonthlyPayrollCSV(monthTrips, month)}>
+            <Download size={15} /> Monats-CSV
+          </button>
+          {ready.length > 0 && (
+            <button style={styles.payrollPrimaryBtn} onClick={markSubmitted}>Übergabe bestätigen</button>
+          )}
+          {ready.length === 0 && submitted.length > 0 && (
+            <button style={styles.payrollPrimaryBtn} onClick={markPaid}>Auszahlung bestätigen</button>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function statusMeta(status) {
   switch (status) {
     case 'draft': return { label: 'Entwurf', bg: '#ECEFF3', fg: '#5B6270' };
@@ -396,7 +486,24 @@ function statusMeta(status) {
 }
 
 function employeeFeedbackMeta(trip) {
-  if (!trip || !trip.statusChangedAt) return null;
+  if (!trip) return null;
+  if (trip.payrollStatus === 'paid' && trip.payrollStatusChangedAt) {
+    return {
+      title: 'Reisekosten ausgezahlt',
+      text: `${trip.destination}: ${fmtEUR(employeeReimbursementTotal(trip))} wurden als ausgezahlt bestätigt.`,
+      bg: '#EAF4EC',
+      fg: '#2E7D4F'
+    };
+  }
+  if (trip.payrollStatus === 'submitted' && trip.payrollStatusChangedAt) {
+    return {
+      title: 'An Gehaltsabrechnung übermittelt',
+      text: `${trip.destination}: ${fmtEUR(employeeReimbursementTotal(trip))} sind für ${formatPayrollMonth(payrollMonthForTrip(trip))} übermittelt.`,
+      bg: '#E9EFF8',
+      fg: '#315D8A'
+    };
+  }
+  if (!trip.statusChangedAt) return null;
   if (trip.status === 'approved') {
     return {
       title: 'RKA genehmigt',
@@ -416,6 +523,12 @@ function employeeFeedbackMeta(trip) {
     };
   }
   return null;
+}
+
+function formatPayrollMonth(month) {
+  if (!month) return '—';
+  const [year, monthNumber] = month.split('-').map(Number);
+  return new Date(year, monthNumber - 1, 1).toLocaleDateString('de-DE', { month: 'long', year: 'numeric' });
 }
 
 function TripCard({ trip, isAdmin, onClick }) {
@@ -443,6 +556,32 @@ function tripTotal(trip) {
   const perDiemTotal = (trip.perDiemDays || []).reduce((s, d) => s + d.amount, 0);
   const expTotal = (trip.expenses || []).reduce((s, e) => s + e.amount, 0);
   return perDiemTotal + expTotal;
+}
+
+function employeeReimbursementTotal(trip) {
+  const perDiemTotal = (trip.perDiemDays || []).reduce((s, d) => s + d.amount, 0);
+  const employeePaidExpenses = (trip.expenses || [])
+    .filter(e => !e.paidBy || e.paidBy === 'employee')
+    .reduce((s, e) => s + e.amount, 0);
+  return perDiemTotal + employeePaidExpenses;
+}
+
+function paidByLabel(value) {
+  return PAID_BY_OPTIONS.find(option => option.value === value)?.label || 'Vom Mitarbeiter bezahlt';
+}
+
+function payrollMonthForTrip(trip) {
+  if (trip.payrollMonth) return trip.payrollMonth;
+  const reference = trip.reviewedAt || trip.statusChangedAt || trip.endDate || new Date().toISOString();
+  return String(reference).slice(0, 7);
+}
+
+function payrollMeta(status) {
+  switch (status) {
+    case 'submitted': return { label: 'An Gehaltsabrechnung übermittelt', bg: '#E9EFF8', fg: '#315D8A' };
+    case 'paid': return { label: 'Ausgezahlt', bg: '#EAF4EC', fg: '#2E7D4F' };
+    default: return { label: 'Für Gehaltsabrechnung vorgemerkt', bg: '#FBF3E3', fg: '#8A6A1F' };
+  }
 }
 
 // ================= NEW TRIP =================
@@ -640,9 +779,21 @@ function TripDetail({ trip, isAdmin, onBack, onUpdate, onDelete, showToast }) {
 
   const reviewTrip = (status, note = '') => {
     const now = new Date().toISOString();
+    const payrollFields = status === 'approved'
+      ? {
+          payrollStatus: 'ready',
+          payrollMonth: now.slice(0, 7),
+          payrollStatusChangedAt: now,
+        }
+      : {
+          payrollStatus: undefined,
+          payrollMonth: undefined,
+          payrollStatusChangedAt: undefined,
+        };
     onUpdate({
       ...trip,
       status,
+      ...payrollFields,
       adminNote: status === 'rejected' ? note.trim() : '',
       reviewedAt: now,
       reviewedBy: ADMIN_NAME,
@@ -735,6 +886,10 @@ function TripDetail({ trip, isAdmin, onBack, onUpdate, onDelete, showToast }) {
         <div style={styles.auditInfo}>Vom Mitarbeiter bestätigt: {trip.employeeConfirmedBy || trip.employee} · {fmtDateTime(trip.employeeConfirmedAt)}</div>
       )}
 
+      {trip.status === 'approved' && (
+        <PayrollStatusBox trip={trip} isAdmin={isAdmin} onUpdate={onUpdate} showToast={showToast} />
+      )}
+
       {isAdmin && trip.status === 'pending' && (
         <div style={styles.approveRow}>
           <button style={styles.rejectBtn} onClick={() => setShowRejectModal(true)}><X size={16} /> Ablehnen mit Notiz</button>
@@ -781,6 +936,7 @@ function TripDetail({ trip, isAdmin, onBack, onUpdate, onDelete, showToast }) {
                 <div style={styles.expenseDesc}>{e.description || '—'}</div>
                 {e.occasion && <div style={styles.expenseDesc}>Anlass: {e.occasion}</div>}
                 {e.attendees && <div style={styles.expenseDesc}>Teilnehmer: {e.attendees}</div>}
+                <div style={styles.paidByLabel}>{paidByLabel(e.paidBy)}</div>
                 <div style={styles.expenseDate}>
                   {e.checkoutDate ? `${fmtDate(e.date)} – ${fmtDate(e.checkoutDate)} · ${e.nights} ${e.nights === 1 ? 'Nacht' : 'Nächte'}` : fmtDate(e.date)}
                 </div>
@@ -843,6 +999,63 @@ function TripDetail({ trip, isAdmin, onBack, onUpdate, onDelete, showToast }) {
       {viewPhoto && (
         <PhotoViewerModal expenseId={viewPhoto} onClose={() => setViewPhoto(null)} />
       )}
+    </div>
+  );
+}
+
+function PayrollStatusBox({ trip, isAdmin, onUpdate, showToast }) {
+  const payrollStatus = trip.payrollStatus || 'ready';
+  const meta = payrollMeta(payrollStatus);
+  const month = payrollMonthForTrip(trip);
+  const reimbursement = employeeReimbursementTotal(trip);
+  const companyPaid = Math.max(0, tripTotal(trip) - reimbursement);
+
+  const updatePayroll = (nextStatus) => {
+    const now = new Date().toISOString();
+    onUpdate({
+      ...trip,
+      payrollStatus: nextStatus,
+      payrollMonth: month,
+      payrollSubmittedAt: nextStatus === 'submitted' ? now : trip.payrollSubmittedAt,
+      payrollPaidAt: nextStatus === 'paid' ? now : trip.payrollPaidAt,
+      payrollStatusChangedAt: now,
+      employeeFeedbackSeen: false,
+    });
+    showToast(nextStatus === 'submitted' ? 'An Gehaltsabrechnung übermittelt' : 'Als ausgezahlt markiert');
+  };
+
+  return (
+    <div style={styles.payrollStatusBox}>
+      <div style={styles.payrollStatusTop}>
+        <div>
+          <div style={styles.payrollEyebrow}>Auszahlung an Mitarbeiter</div>
+          <div style={styles.payrollDetailAmount}>{fmtEUR(reimbursement)}</div>
+        </div>
+        <span style={{ ...styles.statusPill, background: meta.bg, color: meta.fg }}>{meta.label}</span>
+      </div>
+      <div style={styles.payrollStatusInfo}>
+        Abrechnungsmonat: <strong>{formatPayrollMonth(month)}</strong>
+        {companyPaid > 0 && <> · Bereits vom Unternehmen bezahlt: <strong>{fmtEUR(companyPaid)}</strong></>}
+      </div>
+      {isAdmin && (
+        <div style={styles.payrollDetailActions}>
+          <input
+            type="month"
+            value={month}
+            onChange={e => onUpdate({ ...trip, payrollMonth: e.target.value })}
+            style={styles.monthInput}
+            aria-label="Abrechnungsmonat ändern"
+          />
+          {payrollStatus === 'ready' && (
+            <button style={styles.payrollPrimaryBtn} onClick={() => updatePayroll('submitted')}>Als übermittelt markieren</button>
+          )}
+          {payrollStatus === 'submitted' && (
+            <button style={styles.payrollPrimaryBtn} onClick={() => updatePayroll('paid')}>Als ausgezahlt markieren</button>
+          )}
+        </div>
+      )}
+      {trip.payrollSubmittedAt && <div style={styles.payrollAudit}>Übermittelt: {fmtDateTime(trip.payrollSubmittedAt)}</div>}
+      {trip.payrollPaidAt && <div style={styles.payrollAudit}>Ausgezahlt: {fmtDateTime(trip.payrollPaidAt)}</div>}
     </div>
   );
 }
@@ -1091,6 +1304,7 @@ function AddExpenseModal({ onClose, onAdd }) {
   const [km, setKm] = useState('');
   const [photo, setPhoto] = useState(null); // data URL preview
   const [uploading, setUploading] = useState(false);
+  const [paidBy, setPaidBy] = useState('employee');
 
   const handlePhotoSelect = async (e) => {
     const file = e.target.files && e.target.files[0];
@@ -1127,6 +1341,7 @@ function AddExpenseModal({ onClose, onAdd }) {
       description: description.trim(),
       date,
       amount: Math.round(computedAmount * 100) / 100,
+      paidBy,
       km: isKm ? parseFloat(km || 0) : undefined,
       attendees: isBewirtung ? attendees.trim() : undefined,
       occasion: isBewirtung ? occasion.trim() : undefined,
@@ -1185,6 +1400,14 @@ function AddExpenseModal({ onClose, onAdd }) {
         {computedAmount > 0 && (
           <div style={styles.computedAmount}>Betrag: {fmtEUR(computedAmount)}</div>
         )}
+        <Field label="Bezahlt durch">
+          <select style={styles.input} value={paidBy} onChange={e => setPaidBy(e.target.value)}>
+            {PAID_BY_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </Field>
+        {paidBy !== 'employee' && (
+          <p style={styles.companyPaidHint}>Dieser Betrag wird dokumentiert, aber nicht an den Mitarbeiter ausgezahlt.</p>
+        )}
         <Field label="Beleg-Foto">
           {photo ? (
             <div style={styles.photoPreviewWrap}>
@@ -1216,6 +1439,53 @@ function AddExpenseModal({ onClose, onAdd }) {
 }
 
 // ================= EXPORT =================
+function downloadCSV(lines, filename) {
+  const csv = lines.map(row => row.map(cell => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(';')).join('\n');
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportMonthlyPayrollCSV(trips, month) {
+  const lines = [[
+    'Abrechnungsmonat', 'Antragsnummer', 'Mitarbeiter', 'Reiseziel', 'Reisezeitraum',
+    'Verpflegung', 'Vom Mitarbeiter bezahlte Belege', 'Auszahlungsbetrag',
+    'Firmenkarte/Unternehmen', 'Freigabestatus', 'Auszahlungsstatus', 'Genehmigt am'
+  ]];
+
+  trips.forEach(trip => {
+    const perDiem = (trip.perDiemDays || []).reduce((sum, day) => sum + day.amount, 0);
+    const employeeExpenses = (trip.expenses || [])
+      .filter(expense => !expense.paidBy || expense.paidBy === 'employee')
+      .reduce((sum, expense) => sum + expense.amount, 0);
+    const companyPaid = (trip.expenses || [])
+      .filter(expense => expense.paidBy === 'companyCard' || expense.paidBy === 'company')
+      .reduce((sum, expense) => sum + expense.amount, 0);
+    lines.push([
+      month,
+      trip.id,
+      trip.employee,
+      trip.destination,
+      `${fmtDate(trip.startDate)} - ${fmtDate(trip.endDate)}`,
+      perDiem.toFixed(2),
+      employeeExpenses.toFixed(2),
+      (perDiem + employeeExpenses).toFixed(2),
+      companyPaid.toFixed(2),
+      statusMeta(trip.status).label,
+      payrollMeta(trip.payrollStatus || 'ready').label,
+      fmtDateTime(trip.reviewedAt),
+    ]);
+  });
+
+  lines.push([]);
+  lines.push(['Gesamtauszahlung', '', '', '', '', '', '', trips.reduce((sum, trip) => sum + employeeReimbursementTotal(trip), 0).toFixed(2)]);
+  downloadCSV(lines, `Reisekosten_Gehaltsabrechnung_${month}.csv`);
+}
+
 function exportTripCSV(trip) {
   const lines = [];
   lines.push(['Reisekostenabrechnung']);
@@ -1226,6 +1496,11 @@ function exportTripCSV(trip) {
   lines.push(['Status', statusMeta(trip.status).label]);
   lines.push(['Vom Mitarbeiter bestätigt', trip.employeeConfirmedAt ? `${trip.employeeConfirmedBy || trip.employee}, ${fmtDateTime(trip.employeeConfirmedAt)}` : 'Nicht dokumentiert']);
   lines.push(['Geprüft von', trip.reviewedAt ? `${trip.reviewedBy || ADMIN_NAME}, ${fmtDateTime(trip.reviewedAt)}` : '']);
+  if (trip.status === 'approved') {
+    lines.push(['Auszahlungsbetrag Mitarbeiter', employeeReimbursementTotal(trip).toFixed(2)]);
+    lines.push(['Abrechnungsmonat', payrollMonthForTrip(trip)]);
+    lines.push(['Auszahlungsstatus', payrollMeta(trip.payrollStatus || 'ready').label]);
+  }
   if (trip.adminNote) lines.push(['Hinweis der Freigabe', trip.adminNote]);
   lines.push([]);
   lines.push(['Verpflegungsmehraufwand']);
@@ -1235,28 +1510,22 @@ function exportTripCSV(trip) {
   });
   lines.push([]);
   lines.push(['Belege']);
-  lines.push(['Datum', 'Kategorie', 'Beschreibung', 'Anlass', 'Teilnehmer', 'Betrag']);
+  lines.push(['Datum', 'Kategorie', 'Beschreibung', 'Anlass', 'Teilnehmer', 'Bezahlt durch', 'Betrag']);
   (trip.expenses || []).forEach(e => {
     const dateStr = e.checkoutDate ? `${fmtDate(e.date)} - ${fmtDate(e.checkoutDate)} (${e.nights} Nächte)` : fmtDate(e.date);
-    lines.push([dateStr, e.category, e.description || '', e.occasion || '', e.attendees || '', e.amount.toFixed(2)]);
+    lines.push([dateStr, e.category, e.description || '', e.occasion || '', e.attendees || '', paidByLabel(e.paidBy), e.amount.toFixed(2)]);
   });
   lines.push([]);
   lines.push(['Gesamtsumme', '', '', '', tripTotal(trip).toFixed(2)]);
 
-  const csv = lines.map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(';')).join('\n');
-  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `Reisekosten_${trip.employee}_${trip.destination}_${trip.startDate}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
+  downloadCSV(lines, `Reisekosten_${trip.employee}_${trip.destination}_${trip.startDate}.csv`);
 }
 
 function exportTripPDF(trip) {
   const perDiemTotal = trip.perDiemDays.reduce((s, d) => s + d.amount, 0);
   const expTotal = (trip.expenses || []).reduce((s, e) => s + e.amount, 0);
   const total = perDiemTotal + expTotal;
+  const reimbursement = employeeReimbursementTotal(trip);
 
   const win = window.open('', '_blank');
   win.document.write(`
@@ -1280,6 +1549,8 @@ function exportTripPDF(trip) {
       <div><strong>Anlass:</strong> ${trip.purpose || '—'}</div>
       <div><strong>Zeitraum:</strong> ${fmtDate(trip.startDate)}${trip.startTime ? ' · ' + trip.startTime + ' Uhr' : ''} – ${fmtDate(trip.endDate)}${trip.endTime ? ' · ' + trip.endTime + ' Uhr' : ''}</div>
       <div><strong>Status:</strong> ${statusMeta(trip.status).label}</div>
+      ${trip.status === 'approved' ? `<div><strong>Auszahlung an Mitarbeiter:</strong> ${fmtEUR(reimbursement)}</div>` : ''}
+      ${trip.status === 'approved' ? `<div><strong>Gehaltsabrechnung:</strong> ${formatPayrollMonth(payrollMonthForTrip(trip))} · ${payrollMeta(trip.payrollStatus || 'ready').label}</div>` : ''}
       <div><strong>Mitarbeiterbestätigung:</strong> ${trip.employeeConfirmedAt ? `${trip.employeeConfirmedBy || trip.employee}, ${fmtDateTime(trip.employeeConfirmedAt)}` : 'Nicht dokumentiert'}</div>
       ${trip.reviewedAt ? `<div><strong>Geprüft von:</strong> ${trip.reviewedBy || ADMIN_NAME}, ${fmtDateTime(trip.reviewedAt)}</div>` : ''}
       ${trip.adminNote ? `<div><strong>Hinweis der Freigabe:</strong> ${trip.adminNote}</div>` : ''}
@@ -1293,11 +1564,11 @@ function exportTripPDF(trip) {
 
     <div class="section-title">Belege</div>
     <table>
-      <tr><th>Datum</th><th>Kategorie</th><th>Beschreibung</th><th>Anlass / Teilnehmer</th><th>Betrag</th></tr>
-      ${(trip.expenses || []).length === 0 ? '<tr><td colspan="5">Keine Belege</td></tr>' : trip.expenses.map(e => `<tr><td>${e.checkoutDate ? fmtDate(e.date) + ' – ' + fmtDate(e.checkoutDate) + ' (' + e.nights + ' Nächte)' : fmtDate(e.date)}</td><td>${e.category}</td><td>${e.description || '—'}</td><td>${e.occasion ? e.occasion + '<br>' + (e.attendees || '') : '—'}</td><td>${fmtEUR(e.amount)}</td></tr>`).join('')}
+      <tr><th>Datum</th><th>Kategorie</th><th>Beschreibung</th><th>Bezahlt durch</th><th>Betrag</th></tr>
+      ${(trip.expenses || []).length === 0 ? '<tr><td colspan="5">Keine Belege</td></tr>' : trip.expenses.map(e => `<tr><td>${e.checkoutDate ? fmtDate(e.date) + ' – ' + fmtDate(e.checkoutDate) + ' (' + e.nights + ' Nächte)' : fmtDate(e.date)}</td><td>${e.category}</td><td>${e.description || '—'}${e.occasion ? '<br>' + e.occasion + ' · ' + (e.attendees || '') : ''}</td><td>${paidByLabel(e.paidBy)}</td><td>${fmtEUR(e.amount)}</td></tr>`).join('')}
     </table>
 
-    <div class="total">Gesamtsumme: ${fmtEUR(total)}</div>
+    <div class="total">Gesamtsumme: ${fmtEUR(total)}${trip.status === 'approved' ? `<br><span style="font-size:14px">Auszahlung an Mitarbeiter: ${fmtEUR(reimbursement)}</span>` : ''}</div>
     </body></html>
   `);
   win.document.close();
@@ -1335,6 +1606,16 @@ const styles = {
 
   listWrap: { padding: '16px 16px 100px', position: 'relative', minHeight: 'calc(100vh - 70px)' },
   pendingBanner: { display: 'flex', alignItems: 'center', gap: 8, background: '#FBF3E3', color: '#8A6A1F', padding: '10px 14px', borderRadius: 10, fontSize: 13, marginBottom: 14, fontWeight: 500 },
+  payrollPanel: { background: NAVY, color: OFFWHITE, borderRadius: 16, padding: 16, marginBottom: 16, boxShadow: '0 8px 22px rgba(26,35,50,0.12)' },
+  payrollHeader: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 },
+  payrollEyebrow: { fontSize: 11.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', opacity: 0.72 },
+  payrollAmount: { fontSize: 24, fontWeight: 750, marginTop: 3 },
+  monthInput: { border: '1px solid #D8DCE3', borderRadius: 9, padding: '8px 9px', background: '#fff', color: NAVY, fontSize: 12.5, boxSizing: 'border-box' },
+  payrollStats: { display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 12, fontSize: 11.5, color: '#D8DCE3' },
+  payrollEmpty: { marginTop: 13, fontSize: 12.5, color: '#D8DCE3', lineHeight: 1.4 },
+  payrollActions: { display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 14 },
+  payrollSecondaryBtn: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '10px 12px', borderRadius: 9, border: '1px solid #596274', background: 'transparent', color: OFFWHITE, fontSize: 12.5, fontWeight: 650, cursor: 'pointer' },
+  payrollPrimaryBtn: { display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '10px 12px', borderRadius: 9, border: 'none', background: GOLD, color: NAVY, fontSize: 12.5, fontWeight: 700, cursor: 'pointer' },
   employeeFeedbackBanner: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, padding: '12px 14px', borderRadius: 12, marginBottom: 14, fontSize: 13, lineHeight: 1.4 },
   employeeFeedbackText: { display: 'flex', flexDirection: 'column', gap: 3 },
   feedbackCloseBtn: { background: 'none', border: 'none', cursor: 'pointer', padding: 2, display: 'flex', alignItems: 'center' },
@@ -1389,6 +1670,12 @@ const styles = {
   adminNoteText: { fontSize: 13.5, color: NAVY, lineHeight: 1.45 },
   adminNoteMeta: { fontSize: 11.5, color: '#8A8F98', marginTop: 8 },
   auditInfo: { fontSize: 11.5, color: '#5B6270', background: '#F1EFEA', padding: '9px 11px', borderRadius: 9, marginBottom: 14 },
+  payrollStatusBox: { background: '#fff', border: '1.5px solid #E2E4E8', borderRadius: 13, padding: 14, marginBottom: 14 },
+  payrollStatusTop: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 },
+  payrollDetailAmount: { fontSize: 21, fontWeight: 750, marginTop: 3 },
+  payrollStatusInfo: { fontSize: 12, color: '#5B6270', lineHeight: 1.45, marginTop: 10 },
+  payrollDetailActions: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginTop: 12 },
+  payrollAudit: { fontSize: 11.5, color: '#8A8F98', marginTop: 7 },
 
   tabs: { display: 'flex', gap: 4, background: '#ECE9E3', borderRadius: 10, padding: 4, marginBottom: 14 },
   tab: { flex: 1, padding: '9px', border: 'none', background: 'transparent', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer', color: '#5B6270' },
@@ -1409,6 +1696,7 @@ const styles = {
   expenseCard: { background: '#fff', border: '1px solid #ECE9E3', borderRadius: 12, padding: '12px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
   expenseCategory: { fontSize: 13.5, fontWeight: 700 },
   expenseDesc: { fontSize: 12.5, color: '#5B6270', marginTop: 2 },
+  paidByLabel: { display: 'inline-block', fontSize: 10.5, color: '#315D8A', background: '#E9EFF8', padding: '3px 7px', borderRadius: 12, marginTop: 6, fontWeight: 650 },
   expenseDate: { fontSize: 11.5, color: '#8A8F98', marginTop: 2 },
   expenseRight: { display: 'flex', alignItems: 'center', gap: 10 },
   expenseAmount: { fontSize: 14.5, fontWeight: 700 },
@@ -1427,6 +1715,7 @@ const styles = {
   modalHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 },
   modalTitle: { fontSize: 16, fontWeight: 700 },
   computedAmount: { fontSize: 13.5, fontWeight: 600, color: GOLD, marginBottom: 16 },
+  companyPaidHint: { fontSize: 12, color: '#315D8A', background: '#E9EFF8', padding: '9px 10px', borderRadius: 9, margin: '-6px 0 16px', lineHeight: 1.4 },
   photoSourceRow: { display: 'flex', gap: 10 },
   photoChoiceBtn: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, padding: '14px 10px', borderRadius: 10, border: '1.5px dashed #C4C9D1', background: '#fff', color: '#5B6270', fontSize: 13, fontWeight: 500, cursor: 'pointer' },
   photoPreviewWrap: { position: 'relative', width: 100, height: 100 },
