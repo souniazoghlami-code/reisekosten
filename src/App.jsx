@@ -85,6 +85,13 @@ function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
+function isTestTrip(trip) {
+  if (!trip) return false;
+  return [trip.employee, trip.destination, trip.purpose]
+    .filter(Boolean)
+    .some(value => String(value).toLowerCase().includes('test'));
+}
+
 function compressImage(file, maxWidth = 1000, quality = 0.65) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -274,10 +281,15 @@ export default function App() {
             }}
             onDelete={async (id) => {
               const original = trips.find(t => t.id === id);
-              if (isAdmin || !original || !['draft', 'rejected'].includes(original.status)) {
+              const adminMayDeleteTest = isAdmin && isTestTrip(original);
+              const employeeMayDeleteDraft = !isAdmin && original && ['draft', 'rejected'].includes(original.status);
+              if (!original || (!adminMayDeleteTest && !employeeMayDeleteDraft)) {
                 showToast('Diese Abrechnung kann nicht gelöscht werden');
                 return;
               }
+              await Promise.all((original.expenses || [])
+                .filter(expense => expense.hasReceipt)
+                .map(expense => deleteReceiptImage(expense.id)));
               const next = trips.filter(t => t.id !== id);
               await persist(next);
               setView('list');
@@ -769,6 +781,7 @@ function TripDetail({ trip, isAdmin, onBack, onUpdate, onDelete, showToast }) {
   const sm = statusMeta(trip.status);
   const total = tripTotal(trip);
   const canEdit = !isAdmin && (trip.status === 'draft' || trip.status === 'rejected');
+  const canDeleteTest = isAdmin && isTestTrip(trip);
   const canClassifyPayment = isAdmin && (
     trip.status === 'pending' ||
     (trip.status === 'approved' && (!trip.payrollStatus || trip.payrollStatus === 'ready'))
@@ -1020,6 +1033,17 @@ function TripDetail({ trip, isAdmin, onBack, onUpdate, onDelete, showToast }) {
         <button style={styles.exportBtn} onClick={() => exportTripCSV(trip)}><Download size={15} /> CSV</button>
         {canEdit && <button style={styles.deleteBtn} onClick={() => { if (confirm('Reise wirklich löschen?')) onDelete(trip.id); }}><Trash2 size={15} /></button>}
       </div>
+
+      {canDeleteTest && (
+        <button
+          style={styles.testDeleteBtn}
+          onClick={() => {
+            if (confirm('Testantrag einschließlich der hochgeladenen Testbelege endgültig löschen?')) onDelete(trip.id);
+          }}
+        >
+          <Trash2 size={15} /> Testantrag löschen
+        </button>
+      )}
 
       {showEditTrip && (
         <EditTripModal
@@ -1760,6 +1784,7 @@ const styles = {
   exportRow: { display: 'flex', gap: 10, marginTop: 24 },
   exportBtn: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '11px', borderRadius: 10, border: '1.5px solid #E2E4E8', background: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer', color: NAVY },
   deleteBtn: { display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '11px 14px', borderRadius: 10, border: '1.5px solid #F0D4D2', background: '#fff', color: '#C0392B', cursor: 'pointer' },
+  testDeleteBtn: { width: '100%', marginTop: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, padding: '11px 13px', borderRadius: 10, border: '1.5px solid #E8B4B0', background: '#FFF7F6', color: '#C0392B', fontSize: 13, fontWeight: 650, cursor: 'pointer' },
 
   modalOverlay: { position: 'fixed', inset: 0, background: 'rgba(26,35,50,0.5)', display: 'flex', alignItems: 'flex-end', zIndex: 100 },
   modalCard: { background: OFFWHITE, borderRadius: '20px 20px 0 0', padding: '20px 18px 30px', width: '100%', maxWidth: 480, margin: '0 auto', maxHeight: '85vh', overflowY: 'auto', boxSizing: 'border-box' },
