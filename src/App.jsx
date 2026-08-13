@@ -409,9 +409,13 @@ function PayrollPanel({ trips, onUpdateMany, showToast }) {
   const submitted = monthTrips.filter(t => t.payrollStatus === 'submitted');
   const paid = monthTrips.filter(t => t.payrollStatus === 'paid');
   const amount = monthTrips.reduce((sum, trip) => sum + employeeReimbursementTotal(trip), 0);
+  const unclassifiedExpenses = monthTrips.reduce(
+    (sum, trip) => sum + (trip.expenses || []).filter(expense => !expense.paidBy).length,
+    0
+  );
 
   const markSubmitted = async () => {
-    if (ready.length === 0) return;
+    if (ready.length === 0 || unclassifiedExpenses > 0) return;
     const now = new Date().toISOString();
     await onUpdateMany(ready.map(trip => ({
       ...trip,
@@ -457,15 +461,28 @@ function PayrollPanel({ trips, onUpdateMany, showToast }) {
         <span>{submitted.length} übermittelt</span>
         <span>{paid.length} ausgezahlt</span>
       </div>
+      {unclassifiedExpenses > 0 && (
+        <div style={styles.payrollWarning}>
+          {unclassifiedExpenses} ältere{unclassifiedExpenses === 1 ? 'r Beleg muss' : ' Belege müssen'} vor der Übergabe einer Zahlungsart zugeordnet werden.
+        </div>
+      )}
       {monthTrips.length === 0 ? (
         <div style={styles.payrollEmpty}>Für diesen Monat liegen noch keine genehmigten Abrechnungen vor.</div>
       ) : (
         <div style={styles.payrollActions}>
-          <button style={styles.payrollSecondaryBtn} onClick={() => exportMonthlyPayrollCSV(monthTrips, month)}>
+          <button
+            style={{ ...styles.payrollSecondaryBtn, opacity: unclassifiedExpenses > 0 ? 0.45 : 1 }}
+            disabled={unclassifiedExpenses > 0}
+            onClick={() => exportMonthlyPayrollCSV(monthTrips, month)}
+          >
             <Download size={15} /> Monats-CSV
           </button>
           {ready.length > 0 && (
-            <button style={styles.payrollPrimaryBtn} onClick={markSubmitted}>Übergabe bestätigen</button>
+            <button
+              style={{ ...styles.payrollPrimaryBtn, opacity: unclassifiedExpenses > 0 ? 0.45 : 1 }}
+              disabled={unclassifiedExpenses > 0}
+              onClick={markSubmitted}
+            >Übergabe bestätigen</button>
           )}
           {ready.length === 0 && submitted.length > 0 && (
             <button style={styles.payrollPrimaryBtn} onClick={markPaid}>Auszahlung bestätigen</button>
@@ -567,7 +584,7 @@ function employeeReimbursementTotal(trip) {
 }
 
 function paidByLabel(value) {
-  return PAID_BY_OPTIONS.find(option => option.value === value)?.label || 'Vom Mitarbeiter bezahlt';
+  return PAID_BY_OPTIONS.find(option => option.value === value)?.label || 'Zahlungsart noch nicht geprüft';
 }
 
 function payrollMonthForTrip(trip) {
@@ -752,6 +769,10 @@ function TripDetail({ trip, isAdmin, onBack, onUpdate, onDelete, showToast }) {
   const sm = statusMeta(trip.status);
   const total = tripTotal(trip);
   const canEdit = !isAdmin && (trip.status === 'draft' || trip.status === 'rejected');
+  const canClassifyPayment = isAdmin && (
+    trip.status === 'pending' ||
+    (trip.status === 'approved' && (!trip.payrollStatus || trip.payrollStatus === 'ready'))
+  );
 
   const toggleMeal = (date, mealKey) => {
     if (!canEdit) return;
@@ -775,6 +796,15 @@ function TripDetail({ trip, isAdmin, onBack, onUpdate, onDelete, showToast }) {
     if (!canEdit) return;
     onUpdate({ ...trip, expenses: trip.expenses.filter(e => e.id !== id) });
     deleteReceiptImage(id);
+  };
+
+  const updateExpensePaidBy = (expenseId, paidBy) => {
+    if (!canClassifyPayment) return;
+    onUpdate({
+      ...trip,
+      expenses: (trip.expenses || []).map(expense => expense.id === expenseId ? { ...expense, paidBy } : expense),
+    });
+    showToast('Zahlungsart gespeichert');
   };
 
   const reviewTrip = (status, note = '') => {
@@ -936,7 +966,19 @@ function TripDetail({ trip, isAdmin, onBack, onUpdate, onDelete, showToast }) {
                 <div style={styles.expenseDesc}>{e.description || '—'}</div>
                 {e.occasion && <div style={styles.expenseDesc}>Anlass: {e.occasion}</div>}
                 {e.attendees && <div style={styles.expenseDesc}>Teilnehmer: {e.attendees}</div>}
-                <div style={styles.paidByLabel}>{paidByLabel(e.paidBy)}</div>
+                {canClassifyPayment ? (
+                  <select
+                    style={styles.paidBySelect}
+                    value={e.paidBy || ''}
+                    onChange={event => updateExpensePaidBy(e.id, event.target.value)}
+                    aria-label={`Zahlungsart für ${e.category}`}
+                  >
+                    <option value="" disabled>Zahlungsart prüfen</option>
+                    {PAID_BY_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                  </select>
+                ) : (
+                  <div style={styles.paidByLabel}>{paidByLabel(e.paidBy)}</div>
+                )}
                 <div style={styles.expenseDate}>
                   {e.checkoutDate ? `${fmtDate(e.date)} – ${fmtDate(e.checkoutDate)} · ${e.nights} ${e.nights === 1 ? 'Nacht' : 'Nächte'}` : fmtDate(e.date)}
                 </div>
@@ -1009,6 +1051,7 @@ function PayrollStatusBox({ trip, isAdmin, onUpdate, showToast }) {
   const month = payrollMonthForTrip(trip);
   const reimbursement = employeeReimbursementTotal(trip);
   const companyPaid = Math.max(0, tripTotal(trip) - reimbursement);
+  const unclassifiedExpenses = (trip.expenses || []).filter(expense => !expense.paidBy).length;
 
   const updatePayroll = (nextStatus) => {
     const now = new Date().toISOString();
@@ -1037,6 +1080,11 @@ function PayrollStatusBox({ trip, isAdmin, onUpdate, showToast }) {
         Abrechnungsmonat: <strong>{formatPayrollMonth(month)}</strong>
         {companyPaid > 0 && <> · Bereits vom Unternehmen bezahlt: <strong>{fmtEUR(companyPaid)}</strong></>}
       </div>
+      {unclassifiedExpenses > 0 && isAdmin && (
+        <div style={styles.payrollDetailWarning}>
+          Bitte bei {unclassifiedExpenses} ältere{unclassifiedExpenses === 1 ? 'm Beleg' : 'n Belegen'} unter „Belege“ die Zahlungsart prüfen.
+        </div>
+      )}
       {isAdmin && (
         <div style={styles.payrollDetailActions}>
           <input
@@ -1612,6 +1660,7 @@ const styles = {
   payrollAmount: { fontSize: 24, fontWeight: 750, marginTop: 3 },
   monthInput: { border: '1px solid #D8DCE3', borderRadius: 9, padding: '8px 9px', background: '#fff', color: NAVY, fontSize: 12.5, boxSizing: 'border-box' },
   payrollStats: { display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 12, fontSize: 11.5, color: '#D8DCE3' },
+  payrollWarning: { fontSize: 12, color: '#FFE1A3', background: 'rgba(201,162,75,0.16)', border: '1px solid rgba(201,162,75,0.35)', padding: '9px 10px', borderRadius: 9, marginTop: 12, lineHeight: 1.4 },
   payrollEmpty: { marginTop: 13, fontSize: 12.5, color: '#D8DCE3', lineHeight: 1.4 },
   payrollActions: { display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 14 },
   payrollSecondaryBtn: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '10px 12px', borderRadius: 9, border: '1px solid #596274', background: 'transparent', color: OFFWHITE, fontSize: 12.5, fontWeight: 650, cursor: 'pointer' },
@@ -1674,6 +1723,7 @@ const styles = {
   payrollStatusTop: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 },
   payrollDetailAmount: { fontSize: 21, fontWeight: 750, marginTop: 3 },
   payrollStatusInfo: { fontSize: 12, color: '#5B6270', lineHeight: 1.45, marginTop: 10 },
+  payrollDetailWarning: { fontSize: 12, color: '#8A6A1F', background: '#FBF3E3', padding: '9px 10px', borderRadius: 9, marginTop: 10, lineHeight: 1.4 },
   payrollDetailActions: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginTop: 12 },
   payrollAudit: { fontSize: 11.5, color: '#8A8F98', marginTop: 7 },
 
@@ -1697,6 +1747,7 @@ const styles = {
   expenseCategory: { fontSize: 13.5, fontWeight: 700 },
   expenseDesc: { fontSize: 12.5, color: '#5B6270', marginTop: 2 },
   paidByLabel: { display: 'inline-block', fontSize: 10.5, color: '#315D8A', background: '#E9EFF8', padding: '3px 7px', borderRadius: 12, marginTop: 6, fontWeight: 650 },
+  paidBySelect: { display: 'block', maxWidth: 220, marginTop: 7, border: '1px solid #C8D5E3', borderRadius: 8, padding: '6px 8px', background: '#F7FAFD', color: NAVY, fontSize: 11.5 },
   expenseDate: { fontSize: 11.5, color: '#8A8F98', marginTop: 2 },
   expenseRight: { display: 'flex', alignItems: 'center', gap: 10 },
   expenseAmount: { fontSize: 14.5, fontWeight: 700 },
