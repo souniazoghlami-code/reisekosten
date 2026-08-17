@@ -124,7 +124,6 @@ const EXPENSE_CATEGORIES = [
 const PAID_BY_OPTIONS = [
   { value: 'employee', label: 'Vom Mitarbeiter bezahlt' },
   { value: 'companyCard', label: 'Mit Firmenkarte bezahlt' },
-  { value: 'company', label: 'Direkt vom Unternehmen bezahlt' },
 ];
 
 const KM_RATE = 0.30; // gesetzliches Kilometergeld PKW
