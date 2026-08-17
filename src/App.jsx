@@ -417,8 +417,7 @@ function PayrollPanel({ trips, onUpdateMany, showToast }) {
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
   const monthTrips = trips.filter(t => t.status === 'approved' && payrollMonthForTrip(t) === month);
   const ready = monthTrips.filter(t => !t.payrollStatus || t.payrollStatus === 'ready');
-  const submitted = monthTrips.filter(t => t.payrollStatus === 'submitted');
-  const paid = monthTrips.filter(t => t.payrollStatus === 'paid');
+  const submitted = monthTrips.filter(t => t.payrollStatus === 'submitted' || t.payrollStatus === 'paid');
   const amount = monthTrips.reduce((sum, trip) => sum + employeeReimbursementTotal(trip), 0);
   const unclassifiedExpenses = monthTrips.reduce(
     (sum, trip) => sum + (trip.expenses || []).filter(expense => !expense.paidBy).length,
@@ -439,19 +438,6 @@ function PayrollPanel({ trips, onUpdateMany, showToast }) {
     showToast(`${ready.length} Abrechnung${ready.length === 1 ? '' : 'en'} als übermittelt markiert`);
   };
 
-  const markPaid = async () => {
-    if (submitted.length === 0) return;
-    const now = new Date().toISOString();
-    await onUpdateMany(submitted.map(trip => ({
-      ...trip,
-      payrollStatus: 'paid',
-      payrollPaidAt: now,
-      payrollStatusChangedAt: now,
-      employeeFeedbackSeen: false,
-    })));
-    showToast(`${submitted.length} Abrechnung${submitted.length === 1 ? '' : 'en'} als ausgezahlt markiert`);
-  };
-
   return (
     <section style={styles.payrollPanel}>
       <div style={styles.payrollHeader}>
@@ -470,11 +456,10 @@ function PayrollPanel({ trips, onUpdateMany, showToast }) {
       <div style={styles.payrollStats}>
         <span>{ready.length} vorgemerkt</span>
         <span>{submitted.length} übermittelt</span>
-        <span>{paid.length} ausgezahlt</span>
       </div>
       {unclassifiedExpenses > 0 && (
         <div style={styles.payrollWarning}>
-          {unclassifiedExpenses} ältere{unclassifiedExpenses === 1 ? 'r Beleg muss' : ' Belege müssen'} vor der Übergabe einer Zahlungsart zugeordnet werden.
+          {unclassifiedExpenses === 1 ? 'Bei einer älteren Ausgabe fehlt' : `Bei ${unclassifiedExpenses} älteren Ausgaben fehlt`} die Zahlungsart. Bitte unter „Belege“ jeweils „Vom Mitarbeiter bezahlt“ oder „Mit Firmenkarte bezahlt“ auswählen.
         </div>
       )}
       {monthTrips.length === 0 ? (
@@ -495,9 +480,6 @@ function PayrollPanel({ trips, onUpdateMany, showToast }) {
               onClick={markSubmitted}
             >Übergabe bestätigen</button>
           )}
-          {ready.length === 0 && submitted.length > 0 && (
-            <button style={styles.payrollPrimaryBtn} onClick={markPaid}>Auszahlung bestätigen</button>
-          )}
         </div>
       )}
     </section>
@@ -515,15 +497,7 @@ function statusMeta(status) {
 
 function employeeFeedbackMeta(trip) {
   if (!trip) return null;
-  if (trip.payrollStatus === 'paid' && trip.payrollStatusChangedAt) {
-    return {
-      title: 'Reisekosten ausgezahlt',
-      text: `${trip.destination}: ${fmtEUR(employeeReimbursementTotal(trip))} wurden als ausgezahlt bestätigt.`,
-      bg: '#EAF4EC',
-      fg: '#2E7D4F'
-    };
-  }
-  if (trip.payrollStatus === 'submitted' && trip.payrollStatusChangedAt) {
+  if ((trip.payrollStatus === 'submitted' || trip.payrollStatus === 'paid') && trip.payrollStatusChangedAt) {
     return {
       title: 'An Gehaltsabrechnung übermittelt',
       text: `${trip.destination}: ${fmtEUR(employeeReimbursementTotal(trip))} sind für ${formatPayrollMonth(payrollMonthForTrip(trip))} übermittelt.`,
@@ -607,7 +581,7 @@ function payrollMonthForTrip(trip) {
 function payrollMeta(status) {
   switch (status) {
     case 'submitted': return { label: 'An Gehaltsabrechnung übermittelt', bg: '#E9EFF8', fg: '#315D8A' };
-    case 'paid': return { label: 'Ausgezahlt', bg: '#EAF4EC', fg: '#2E7D4F' };
+    case 'paid': return { label: 'An Gehaltsabrechnung übermittelt', bg: '#E9EFF8', fg: '#315D8A' };
     default: return { label: 'Für Gehaltsabrechnung vorgemerkt', bg: '#FBF3E3', fg: '#8A6A1F' };
   }
 }
@@ -1069,25 +1043,24 @@ function TripDetail({ trip, isAdmin, onBack, onUpdate, onDelete, showToast }) {
 }
 
 function PayrollStatusBox({ trip, isAdmin, onUpdate, showToast }) {
-  const payrollStatus = trip.payrollStatus || 'ready';
+  const payrollStatus = trip.payrollStatus === 'paid' ? 'submitted' : (trip.payrollStatus || 'ready');
   const meta = payrollMeta(payrollStatus);
   const month = payrollMonthForTrip(trip);
   const reimbursement = employeeReimbursementTotal(trip);
   const companyPaid = Math.max(0, tripTotal(trip) - reimbursement);
   const unclassifiedExpenses = (trip.expenses || []).filter(expense => !expense.paidBy).length;
 
-  const updatePayroll = (nextStatus) => {
+  const updatePayroll = () => {
     const now = new Date().toISOString();
     onUpdate({
       ...trip,
-      payrollStatus: nextStatus,
+      payrollStatus: 'submitted',
       payrollMonth: month,
-      payrollSubmittedAt: nextStatus === 'submitted' ? now : trip.payrollSubmittedAt,
-      payrollPaidAt: nextStatus === 'paid' ? now : trip.payrollPaidAt,
+      payrollSubmittedAt: now,
       payrollStatusChangedAt: now,
       employeeFeedbackSeen: false,
     });
-    showToast(nextStatus === 'submitted' ? 'An Gehaltsabrechnung übermittelt' : 'Als ausgezahlt markiert');
+    showToast('An Gehaltsabrechnung übermittelt');
   };
 
   return (
@@ -1105,7 +1078,7 @@ function PayrollStatusBox({ trip, isAdmin, onUpdate, showToast }) {
       </div>
       {unclassifiedExpenses > 0 && isAdmin && (
         <div style={styles.payrollDetailWarning}>
-          Bitte bei {unclassifiedExpenses} ältere{unclassifiedExpenses === 1 ? 'm Beleg' : 'n Belegen'} unter „Belege“ die Zahlungsart prüfen.
+          {unclassifiedExpenses === 1 ? 'Bei einer älteren Ausgabe fehlt' : `Bei ${unclassifiedExpenses} älteren Ausgaben fehlt`} die Zahlungsart. Bitte unter „Belege“ die Zahlungsart auswählen.
         </div>
       )}
       {isAdmin && (
@@ -1118,15 +1091,11 @@ function PayrollStatusBox({ trip, isAdmin, onUpdate, showToast }) {
             aria-label="Abrechnungsmonat ändern"
           />
           {payrollStatus === 'ready' && (
-            <button style={styles.payrollPrimaryBtn} onClick={() => updatePayroll('submitted')}>Als übermittelt markieren</button>
-          )}
-          {payrollStatus === 'submitted' && (
-            <button style={styles.payrollPrimaryBtn} onClick={() => updatePayroll('paid')}>Als ausgezahlt markieren</button>
+            <button style={styles.payrollPrimaryBtn} onClick={updatePayroll}>Als übermittelt markieren</button>
           )}
         </div>
       )}
       {trip.payrollSubmittedAt && <div style={styles.payrollAudit}>Übermittelt: {fmtDateTime(trip.payrollSubmittedAt)}</div>}
-      {trip.payrollPaidAt && <div style={styles.payrollAudit}>Ausgezahlt: {fmtDateTime(trip.payrollPaidAt)}</div>}
     </div>
   );
 }
@@ -1525,7 +1494,7 @@ function exportMonthlyPayrollCSV(trips, month) {
   const lines = [[
     'Abrechnungsmonat', 'Antragsnummer', 'Mitarbeiter', 'Reiseziel', 'Reisezeitraum',
     'Verpflegung', 'Vom Mitarbeiter bezahlte Belege', 'Auszahlungsbetrag',
-    'Firmenkarte/Unternehmen', 'Freigabestatus', 'Auszahlungsstatus', 'Genehmigt am'
+    'Firmenkarte/Unternehmen', 'Freigabestatus', 'Übergabestatus', 'Genehmigt am'
   ]];
 
   trips.forEach(trip => {
@@ -1570,7 +1539,7 @@ function exportTripCSV(trip) {
   if (trip.status === 'approved') {
     lines.push(['Auszahlungsbetrag Mitarbeiter', employeeReimbursementTotal(trip).toFixed(2)]);
     lines.push(['Abrechnungsmonat', payrollMonthForTrip(trip)]);
-    lines.push(['Auszahlungsstatus', payrollMeta(trip.payrollStatus || 'ready').label]);
+    lines.push(['Übergabestatus', payrollMeta(trip.payrollStatus || 'ready').label]);
   }
   if (trip.adminNote) lines.push(['Hinweis der Freigabe', trip.adminNote]);
   lines.push([]);
