@@ -393,7 +393,7 @@ function TripList({ trips, isAdmin, onSelect, onNew, onUpdateMany, showToast, on
       )}
 
       {isAdmin && (
-        <PayrollPanel trips={trips} onUpdateMany={onUpdateMany} showToast={showToast} />
+        <PayrollPanel trips={trips} onUpdateMany={onUpdateMany} showToast={showToast} onSelect={onSelect} />
       )}
 
       {sorted.length === 0 ? (
@@ -413,16 +413,18 @@ function TripList({ trips, isAdmin, onSelect, onNew, onUpdateMany, showToast, on
   );
 }
 
-function PayrollPanel({ trips, onUpdateMany, showToast }) {
+function PayrollPanel({ trips, onUpdateMany, showToast, onSelect }) {
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
   const monthTrips = trips.filter(t => t.status === 'approved' && payrollMonthForTrip(t) === month);
   const ready = monthTrips.filter(t => !t.payrollStatus || t.payrollStatus === 'ready');
   const submitted = monthTrips.filter(t => t.payrollStatus === 'submitted' || t.payrollStatus === 'paid');
   const amount = monthTrips.reduce((sum, trip) => sum + employeeReimbursementTotal(trip), 0);
-  const unclassifiedExpenses = monthTrips.reduce(
-    (sum, trip) => sum + (trip.expenses || []).filter(expense => !expense.paidBy).length,
-    0
+  const unclassifiedItems = monthTrips.flatMap(trip =>
+    (trip.expenses || [])
+      .filter(expense => !expense.paidBy)
+      .map(expense => ({ trip, expense }))
   );
+  const unclassifiedExpenses = unclassifiedItems.length;
 
   const markSubmitted = async () => {
     if (ready.length === 0 || unclassifiedExpenses > 0) return;
@@ -460,6 +462,22 @@ function PayrollPanel({ trips, onUpdateMany, showToast }) {
       {unclassifiedExpenses > 0 && (
         <div style={styles.payrollWarning}>
           {unclassifiedExpenses === 1 ? 'Bei einer älteren Ausgabe fehlt' : `Bei ${unclassifiedExpenses} älteren Ausgaben fehlt`} die Zahlungsart. Bitte unter „Belege“ jeweils „Vom Mitarbeiter bezahlt“ oder „Mit Firmenkarte bezahlt“ auswählen.
+          <div style={styles.payrollMissingList}>
+            {unclassifiedItems.map(({ trip, expense }) => (
+              <button
+                key={`${trip.id}-${expense.id}`}
+                type="button"
+                style={styles.payrollMissingItem}
+                onClick={() => onSelect(trip)}
+              >
+                <span style={styles.payrollMissingText}>
+                  <strong>{trip.employee} · {trip.destination}</strong>
+                  <small>{expense.category} · {fmtDate(expense.date)}{expense.description ? ` · ${expense.description}` : ''}</small>
+                </span>
+                <ChevronRight size={15} />
+              </button>
+            ))}
+          </div>
         </div>
       )}
       {monthTrips.length === 0 ? (
@@ -1653,6 +1671,9 @@ const styles = {
   monthInput: { border: '1px solid #D8DCE3', borderRadius: 9, padding: '8px 9px', background: '#fff', color: NAVY, fontSize: 12.5, boxSizing: 'border-box' },
   payrollStats: { display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 12, fontSize: 11.5, color: '#D8DCE3' },
   payrollWarning: { fontSize: 12, color: '#FFE1A3', background: 'rgba(201,162,75,0.16)', border: '1px solid rgba(201,162,75,0.35)', padding: '9px 10px', borderRadius: 9, marginTop: 12, lineHeight: 1.4 },
+  payrollMissingList: { display: 'flex', flexDirection: 'column', gap: 6, marginTop: 9, maxHeight: 220, overflowY: 'auto' },
+  payrollMissingItem: { width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '8px 9px', borderRadius: 8, border: '1px solid rgba(255,225,163,0.28)', background: 'rgba(255,255,255,0.08)', color: '#FFF4D6', textAlign: 'left', cursor: 'pointer', fontFamily: 'inherit' },
+  payrollMissingText: { display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 },
   payrollEmpty: { marginTop: 13, fontSize: 12.5, color: '#D8DCE3', lineHeight: 1.4 },
   payrollActions: { display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 14 },
   payrollSecondaryBtn: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '10px 12px', borderRadius: 9, border: '1px solid #596274', background: 'transparent', color: OFFWHITE, fontSize: 12.5, fontWeight: 650, cursor: 'pointer' },
