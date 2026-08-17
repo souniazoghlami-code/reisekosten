@@ -1508,12 +1508,18 @@ function downloadCSV(lines, filename) {
   URL.revokeObjectURL(url);
 }
 
+function csvAmount(value) {
+  return Number(value || 0).toFixed(2).replace('.', ',');
+}
+
 function exportMonthlyPayrollCSV(trips, month) {
   const lines = [[
     'Abrechnungsmonat', 'Antragsnummer', 'Mitarbeiter', 'Reiseziel', 'Reisezeitraum',
     'Verpflegung', 'Vom Mitarbeiter bezahlte Belege', 'Auszahlungsbetrag',
     'Firmenkarte/Unternehmen', 'Freigabestatus', 'Übergabestatus', 'Genehmigt am'
   ]];
+
+  const employeeTotals = new Map();
 
   trips.forEach(trip => {
     const perDiem = (trip.perDiemDays || []).reduce((sum, day) => sum + day.amount, 0);
@@ -1523,16 +1529,28 @@ function exportMonthlyPayrollCSV(trips, month) {
     const companyPaid = (trip.expenses || [])
       .filter(expense => expense.paidBy === 'companyCard' || expense.paidBy === 'company')
       .reduce((sum, expense) => sum + expense.amount, 0);
+    const currentEmployeeTotal = employeeTotals.get(trip.employee) || {
+      perDiem: 0,
+      employeeExpenses: 0,
+      reimbursement: 0,
+      companyPaid: 0,
+    };
+    employeeTotals.set(trip.employee, {
+      perDiem: currentEmployeeTotal.perDiem + perDiem,
+      employeeExpenses: currentEmployeeTotal.employeeExpenses + employeeExpenses,
+      reimbursement: currentEmployeeTotal.reimbursement + perDiem + employeeExpenses,
+      companyPaid: currentEmployeeTotal.companyPaid + companyPaid,
+    });
     lines.push([
       month,
       trip.id,
       trip.employee,
       trip.destination,
       `${fmtDate(trip.startDate)} - ${fmtDate(trip.endDate)}`,
-      perDiem.toFixed(2),
-      employeeExpenses.toFixed(2),
-      (perDiem + employeeExpenses).toFixed(2),
-      companyPaid.toFixed(2),
+      csvAmount(perDiem),
+      csvAmount(employeeExpenses),
+      csvAmount(perDiem + employeeExpenses),
+      csvAmount(companyPaid),
       statusMeta(trip.status).label,
       payrollMeta(trip.payrollStatus || 'ready').label,
       fmtDateTime(trip.reviewedAt),
@@ -1540,7 +1558,22 @@ function exportMonthlyPayrollCSV(trips, month) {
   });
 
   lines.push([]);
-  lines.push(['Gesamtauszahlung', '', '', '', '', '', '', trips.reduce((sum, trip) => sum + employeeReimbursementTotal(trip), 0).toFixed(2)]);
+  lines.push(['Summen je Mitarbeiter']);
+  lines.push(['Abrechnungsmonat', 'Mitarbeiter', 'Verpflegung gesamt', 'Vom Mitarbeiter bezahlte Belege gesamt', 'Auszahlungsbetrag gesamt', 'Firmenkarte gesamt']);
+  [...employeeTotals.entries()]
+    .sort(([employeeA], [employeeB]) => employeeA.localeCompare(employeeB, 'de'))
+    .forEach(([employee, totals]) => {
+      lines.push([
+        month,
+        employee,
+        csvAmount(totals.perDiem),
+        csvAmount(totals.employeeExpenses),
+        csvAmount(totals.reimbursement),
+        csvAmount(totals.companyPaid),
+      ]);
+    });
+  lines.push([]);
+  lines.push(['Gesamtauszahlung', '', '', '', '', '', '', csvAmount(trips.reduce((sum, trip) => sum + employeeReimbursementTotal(trip), 0))]);
   downloadCSV(lines, `Reisekosten_Gehaltsabrechnung_${month}.csv`);
 }
 
